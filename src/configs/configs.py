@@ -21,6 +21,7 @@ class Data:
     datasets: DatasetType
     split_ratio: float = 0.8
     skip_header: bool
+    num_workers: int = 1
 
 
     missing_patterns: list[MissingPattern] = field(default_factory=list)

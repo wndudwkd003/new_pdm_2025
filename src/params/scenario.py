@@ -17,7 +17,7 @@ class StackMode(Enum):
 
 
 class ImputeMethod(Enum):
-    NONE = "none"
+    ZERO = "zero"
     MEAN = "mean"
     KNN = "knn"
     MICE = "mice"

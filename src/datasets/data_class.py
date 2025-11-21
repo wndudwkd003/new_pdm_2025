@@ -1,27 +1,38 @@
 # src/datasets/data_class.py
 
-from torch.utils.data import Dataset
+import enum
+from torch.utils.data import Dataset, DataLoader
 import numpy as np
 from pathlib import Path
 import json
 
+from imputer.base_imputer import BaseImputeAdapter
 from src.configs.configs import Config, DatasetMeta
 
 from src.missing_adapter.base_missing_adapter import BaseMissingAdapter
 from src.missing_adapter.mcar_adapter import MCARAdapter
 
+from src.imputer.mean_imputer import MeanImputer
+from src.imputer.zero_imputer import ZeroImputer
+
+from src.datasets.dl_collator import DefaultMissingCollator
+
 from src.params.literals import Split
-from src.params.scenario import MissingScenario, StackMode, MissingPattern
+from src.params.scenario import (
+    MissingScenario, StackMode,
+    MissingPattern, ImputeMethod
+)
 
 
 
 MISSING_MAP = {
     MissingPattern.MCAR: MCARAdapter,
-
 }
 
-
-
+IMPUTER_MAP = {
+    ImputeMethod.MEAN: MeanImputer,
+    ImputeMethod.ZERO: ZeroImputer,
+}
 
 
 class Datasets(Dataset):
@@ -45,41 +56,231 @@ class Datasets(Dataset):
 
         # 실제 데이터 로드
         X_raw, y_raw = self.numpy_from_samples(samples)
+        self.per_data_size = X_raw.shape[0]
 
         # 결측 시나리오 적용
-        X_missing, y_missing = self.apply_missing_scenario(X_raw, y_raw)
+        self.missing_dict = self.apply_missing_scenario(X_raw, y_raw)
 
-
-
+        # imputation 적용
+        self.imputed_dict = self.apply_imputation(self.missing_dict)
 
 
     # ----------------- 필수 메서드 -----------------
 
     def __len__(self):
-        return self.total_size
+        return self.per_data_size
 
     def __getitem__(self, idx: int):
-        return self.inputs[idx], self.targets[idx]
-
+        return {"base_idx": idx}
 
     # ----------------- 내부 메서드 -----------------
-
-    @staticmethod
-    def get_missing_adapter(missing_pattern: MissingPattern):
-        return MISSING_MAP[missing_pattern]
-
 
     def apply_missing_scenario(
         self,
         X: np.ndarray,
         y: np.ndarray,
     ):
-        for missing_pattern in self.config.data.missing_patterns:
-            missing_adapter = self.get_missing_adapter(missing_pattern)
+       # 기본 비율
+        ratios = [self.config.data.target_missing_ratio]
 
 
-    def as_numpy(self):
-        return self.inputs, self.targets
+        # 다중 시나리오인 경우 비율을 여러개 설정함
+        if self.config.data.missing_scenario == MissingScenario.MULTI:
+            start, target, step = (
+                self.config.data.start_missing_ratio,
+                self.config.data.target_missing_ratio,
+                self.config.data.step_missing_ratio,
+            )
+            ratios = np.arange(start, target + step * 0.5, step).round(4).tolist()
+
+        self.ratios = ratios
+
+
+        # recon 용도 원본 데이터
+        missing_dict = {
+            "original": {
+                "X": X,
+                "y": y,
+            }
+        }
+
+        total_size = 0
+
+        # 각 비율에 따라 결측 패턴 순차 적용
+        for pattern in self.config.data.missing_patterns:
+            Adapter = MISSING_MAP[pattern]
+            missing_dict[pattern.value] = dict()
+
+            for i, ratio in enumerate(ratios):
+                missing_dict[pattern.value][ratio] = dict()
+
+                 # 어댑터 생성 및 변환
+                adapter = Adapter(
+                    ratio=ratio,
+                    seed=self.config.train.seed # 시드 고정
+                )
+
+                X_missing = adapter.transform(X)
+                missing_dict[pattern.value][ratio]["X"] = X_missing
+                missing_dict[pattern.value][ratio]["y"] = y
+
+                total_size += X_missing.shape[0]
+
+        self.total_size = total_size            # 결측 시나리오 적용된 전체 데이터 수
+
+        return missing_dict
+
+
+
+    def apply_imputation(
+        self,
+        missing_dict: dict,
+    ):
+        impute_method = self.config.data.impute_method
+
+        Imputer = IMPUTER_MAP[impute_method]
+
+        imputed_dict = {
+            "original": {
+                "X": missing_dict["original"]["X"],
+                "y": missing_dict["original"]["y"],
+            }
+        }
+
+        # 패턴별로 impute
+        for pattern in self.config.data.missing_patterns:
+            pattern_v = pattern.value
+
+            ratio_dict = missing_dict[pattern_v]
+
+            X_fit_list = []
+
+            for ratio in self.ratios:
+                X_miss = ratio_dict[ratio]["X"]
+                X_fit_list.append(X_miss)
+
+            X_fit = np.concatenate(X_fit_list, axis=0)
+
+            imputer: BaseImputeAdapter = Imputer()
+            imputer.fit(X_fit)
+
+            imputed_dict[pattern_v] = dict()
+
+            for ratio in self.ratios:
+                X_miss = ratio_dict[ratio]["X"]
+                y = ratio_dict[ratio]["y"]
+
+                X_imp, bemv = imputer.transform(X_miss)
+
+                imputed_dict[pattern_v][ratio] = {
+                    "X": X_imp,
+                    "y": y,
+                    "bemv": bemv,
+                }
+
+        return imputed_dict
+
+
+    def get_data_for_gbdt(
+        self,
+    ):
+
+        X_list: list[np.ndarray] = []
+        y_list: list[np.ndarray] = []
+
+        for pattern in self.config.data.missing_patterns:
+            pattern_v = pattern.value
+
+            ratio_dict = self.imputed_dict[pattern_v]
+
+            for ratio in self.ratios:
+                d = ratio_dict[ratio]
+
+                X_imp = d["X"]
+                y = d["y"]
+
+                X_list.append(X_imp)
+                y_list.append(y)
+
+        X_cat = np.concatenate(X_list, axis=0)
+        y_cat = np.concatenate(y_list, axis=0)
+
+        B, S, F = X_cat.shape
+        X_cat = X_cat.reshape(B, S * F)
+
+        return X_cat, y_cat
+
+
+    def get_loader_for_deep(
+        self,
+        shuffle: bool = True,
+    ):
+        self.build_dl_view()
+
+        collator = DefaultMissingCollator(self)
+
+        loader = DataLoader(
+            self,
+            batch_size=self.config.train.batch_size,
+            shuffle=shuffle,
+            num_workers=self.config.data.num_workers,
+            collate_fn=collator,
+        )
+
+        return loader
+
+
+
+    def build_dl_view(self):
+        X_list: list[np.ndarray] = []
+        y_list: list[np.ndarray] = []
+        bemv_list: list[np.ndarray] = []
+        pattern_idx_list: list[np.ndarray] = []
+        ratio_idx_list: list[np.ndarray] = []
+
+        patterns = self.config.data.missing_patterns
+        ratios = self.ratios
+
+        for p_idx, pattern in enumerate(patterns):
+            pattern_v = pattern.value
+            ratio_dict = self.imputed_dict[pattern_v]
+
+            for r_idx, ratio in enumerate(ratios):
+                d = ratio_dict[ratio]
+
+                X_imp = d["X"]      # (B, S, F)
+                y = d["y"]          # (B, T)
+                bemv = d["bemv"]    # (B, S, F)
+
+                B = X_imp.shape[0]
+
+                X_list.append(X_imp)
+                y_list.append(y)
+                bemv_list.append(bemv)
+
+                pattern_idx_list.append(
+                    np.full((B,), p_idx, dtype=np.int64)
+                )
+                ratio_idx_list.append(
+                    np.full((B,), r_idx, dtype=np.int64)
+                )
+
+        X_all = np.concatenate(X_list, axis=0)
+        y_all = np.concatenate(y_list, axis=0)
+        bemv_all = np.concatenate(bemv_list, axis=0)
+        pattern_all = np.concatenate(pattern_idx_list, axis=0)
+        ratio_all = np.concatenate(ratio_idx_list, axis=0)
+
+        self.inputs = X_all.astype(np.float32)
+        self.targets = y_all.astype(np.int64)
+        self.bemv = bemv_all.astype(np.float32)
+        self.pattern_idx = pattern_all
+        self.ratio_idx = ratio_all
+
+        self.N = self.inputs.shape[0]
+
+
+
 
     def get_horizon(self):
         return self.meta.horizon

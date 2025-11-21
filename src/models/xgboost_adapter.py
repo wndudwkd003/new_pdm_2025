@@ -24,8 +24,8 @@ class XGBoostAdapter(BaseModelAdapter):
         valid_data: Datasets,
     ):
         # adapter --> 데이터 세트 반환 (numpy)
-        X_tr, y_tr = train_data.as_numpy()
-        X_val, y_val = valid_data.as_numpy()
+        X_tr, y_tr = train_data.as_numpy_for_gbdt()
+        X_val, y_val = valid_data.as_numpy_for_gbdt()
 
 
         # XGBoost 설정
