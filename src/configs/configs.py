@@ -19,8 +19,11 @@ from params.scenario import (
 @dataclass
 class Data:
     datasets: DatasetType
+    split_ratio: float = 0.8
+    skip_header: bool
 
-    missing_pattern: MissingPattern
+
+    missing_patterns: list[MissingPattern] = field(default_factory=list)
 
 
     missing_scenario: MissingScenario # single / multi
@@ -34,6 +37,8 @@ class Data:
 
 
     impute_method: ImputeMethod
+
+    mask_fill: float
 
 
 
@@ -68,5 +73,10 @@ class Config:
 
 @dataclass
 class DatasetMeta:
-    num_class: int
     horizon: int
+    sequence: int
+    continuous_cols: list[str] = field(default_factory=list)
+    categorical_cols: list[str] = field(default_factory=list)
+    feature_dim: int
+    num_class: int
+

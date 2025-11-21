@@ -1,15 +1,13 @@
+# src/missing_adapter/base_missing_adapter.py
+
+import numpy as np
+
 from abc import ABC, abstractmethod
-
-from src.datasets.data_class import DatasetClass
-from src.params.literals import Split
-
 
 class BaseMissingAdapter(ABC):
     @abstractmethod
     def transform(
         self,
-        dataset: DatasetClass,
-        split: Split,
-    ):
+        X: np.ndarray,
+    ) -> np.ndarray:
         pass
-

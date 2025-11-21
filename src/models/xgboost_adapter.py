@@ -5,7 +5,7 @@ from pathlib import Path
 
 from src.configs.configs import Config
 from src.models.base_model_adapter import BaseModelAdapter
-from src.datasets.data_class import DatasetClass
+from src.datasets.data_class import Datasets
 
 
 class XGBoostAdapter(BaseModelAdapter):
@@ -20,8 +20,8 @@ class XGBoostAdapter(BaseModelAdapter):
 
     def fit(
         self,
-        train_data: DatasetClass,
-        valid_data: DatasetClass,
+        train_data: Datasets,
+        valid_data: Datasets,
     ):
         # adapter --> 데이터 세트 반환 (numpy)
         X_tr, y_tr = train_data.as_numpy()
