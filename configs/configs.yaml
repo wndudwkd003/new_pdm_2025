@@ -1,0 +1,24 @@
+config:
+  ### General settings
+  seed: 42
+  output_dir: outputs
+
+  train: train
+  valid: valid
+  test: test
+
+  train_valid_split: 0.8
+
+  ### Model settings
+  model_type: MDBE
+
+
+  ### Dataset settings
+  datasets_type: MPTMS
+  csv_has_header: true
+
+
+  ### Masking settings
+  masking_ratio: 0.2
+
+
