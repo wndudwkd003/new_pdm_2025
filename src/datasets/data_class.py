@@ -1,15 +1,16 @@
 # src/datasets/data_class.py
 
-import enum
+
 from torch.utils.data import Dataset, DataLoader
+
 import numpy as np
 from pathlib import Path
 import json
+from tqdm.auto import tqdm
 
-from imputer.base_imputer import BaseImputeAdapter
+from src.imputer.base_imputer import BaseImputeAdapter
 from src.configs.configs import Config, DatasetMeta
 
-from src.missing_adapter.base_missing_adapter import BaseMissingAdapter
 from src.missing_adapter.mcar_adapter import MCARAdapter
 
 from src.imputer.mean_imputer import MeanImputer
@@ -75,6 +76,11 @@ class Datasets(Dataset):
 
     # ----------------- 내부 메서드 -----------------
 
+    def get_flat_2d(self, X: np.ndarray):
+        B, S, F = X.shape
+        X_2d = X.reshape(B, S * F)
+        return X_2d
+
     def apply_missing_scenario(
         self,
         X: np.ndarray,
@@ -111,7 +117,9 @@ class Datasets(Dataset):
             Adapter = MISSING_MAP[pattern]
             missing_dict[pattern.value] = dict()
 
-            for i, ratio in enumerate(ratios):
+            for i, ratio in enumerate(
+                tqdm(ratios, desc=f"Applying missing ({pattern.name})", leave=False)
+            ):
                 missing_dict[pattern.value][ratio] = dict()
 
                  # 어댑터 생성 및 변환
@@ -148,7 +156,7 @@ class Datasets(Dataset):
         }
 
         # 패턴별로 impute
-        for pattern in self.config.data.missing_patterns:
+        for pattern in tqdm(self.config.data.missing_patterns, desc=f"Imputing ({impute_method.name})"):
             pattern_v = pattern.value
 
             ratio_dict = missing_dict[pattern_v]
@@ -230,7 +238,6 @@ class Datasets(Dataset):
         return loader
 
 
-
     def build_dl_view(self):
         X_list: list[np.ndarray] = []
         y_list: list[np.ndarray] = []
@@ -245,7 +252,7 @@ class Datasets(Dataset):
             pattern_v = pattern.value
             ratio_dict = self.imputed_dict[pattern_v]
 
-            for r_idx, ratio in enumerate(ratios):
+            for r_idx, ratio in enumerate(tqdm(ratios, desc=f"Building DL view ({pattern.name})", leave=False)):
                 d = ratio_dict[ratio]
 
                 X_imp = d["X"]      # (B, S, F)
@@ -334,7 +341,7 @@ class Datasets(Dataset):
 
         skip_header = 1 if self.config.data.skip_header else 0
 
-        for sample in samples:
+        for sample in tqdm(samples, desc=f"Loading CSV/labels ({self.split})"):
             csv_paths   = sample["input_files"]["csvs"]
             label_paths = sample["target_files"]["labels"]
 
@@ -342,11 +349,19 @@ class Datasets(Dataset):
             ys = []
 
             for csv_path in csv_paths:
-                row = np.genfromtxt(
+                # row = np.genfromtxt(
+                #     csv_path,
+                #     delimiter=',',
+                #     dtype=np.float32,
+                #     skip_header=skip_header,
+                # )
+                # rows.append(row)
+
+                row = np.loadtxt(
                     csv_path,
                     delimiter=',',
                     dtype=np.float32,
-                    skip_header=skip_header,
+                    skiprows=skip_header,
                 )
                 rows.append(row)
 

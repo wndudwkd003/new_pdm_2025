@@ -4,15 +4,16 @@ from pathlib import Path
 from datetime import datetime
 from dataclasses import asdict
 import json, shutil
-import numpy as np
 
 from src.configs.configs import Config
-from src.params.data_model import ModelType
 from src.params.literals import Split, Workspace
+from src.params.model_map import MODEL_MAP
 from src.datasets.data_class import Datasets
-from src.models.base_model_adapter import BaseModelAdapter
-
-
+from src.utils.eval_viz import (
+    save_metrics_artifacts,
+    save_history_artifacts,
+    plot_metric_over_ratio,
+)
 
 class Trainer:
     def __init__(
@@ -24,7 +25,7 @@ class Trainer:
         self.model_type = config.model.model
         self.stage_type = config.model.stage
 
-        self.adapter = self.model_type.value(config)
+        self.adapter = MODEL_MAP[self.model_type](config)
 
 
     def get_work_dir(self):
@@ -39,84 +40,179 @@ class Trainer:
         stage = self.stage_type.name.lower()
 
         other_prefix = self.config.model.other_prefix
-        other_prefix = f"_{other_prefix}" if other_prefix != "" else ""
+        other_prefix = f"-{other_prefix}" if other_prefix != "" else ""
 
-        run_name = f"{now}_{mn}-{sr}_to_{tr}_{step}step_{stage}{other_prefix}"
+        run_name = f"{now}_{mn}-{sr}_to_{tr}_{step}step-{stage}{other_prefix}"
 
         # ws dir 생성
         work_dir = Path(self.config.train.output_dir) / run_name
         work_dir.mkdir(parents=True, exist_ok=True)
 
-        # config 백업
-        config_dir = work_dir / "config"
-        config_dir.mkdir(parents=True, exist_ok=True)
-
-        with open(config_dir / "config.json", "w") as f:
-            json.dump(asdict(self.config), f, ensure_ascii=False, indent=2)
-
         # configs, scripts, src 폴더 복사
         backup_dir = work_dir / "backup"
         backup_dir.mkdir(parents=True, exist_ok=True)
 
-        for dir in list(Workspace):
-            source = Path(dir)
-            dist = backup_dir / dir
+        for p in list(Workspace.__args__):
+            source = Path(p)
+            dist = backup_dir / p
             shutil.copytree(source, dist, dirs_exist_ok=True)
 
         return work_dir
 
-    def train(self):
-        # train 시 작업 디렉토리 생성
-        self.work_dir = self.get_work_dir()
 
-        train_ds = Datasets(self.config, "train")
-        valid_ds = Datasets(self.config, "valid")
+    def run(self, split: Split):
+        if split == "train":
+            # train 시 작업 디렉토리 생성
+            self.work_dir = self.get_work_dir()
 
-        results = self.adapter.fit(train_ds, valid_ds)
-        self.adapter.save(self.work_dir)
+            train_ds = Datasets(self.config, "train")
+            valid_ds = Datasets(self.config, "valid")
 
-        results_dir = self.work_dir / "history"
-        results_dir.mkdir(parents=True, exist_ok=True)
+            model_save_dir = self.work_dir / split
+            model_save_dir.mkdir(parents=True, exist_ok=True)
 
-        metrics = self.save_results(results, results_dir, "train")
+            results = self.adapter.fit(train_ds, valid_ds)
+            self.adapter.save(model_save_dir)
 
-        return metrics
-
-
-    def test(self):
-        # test 시 저장된 디렉토리 불러옴
-        self.work_dir = Path(self.config.model.save_work_dir)
-
-        results_dir = self.work_dir / "results"
-        results_dir.mkdir(parents=True, exist_ok=True)
+            results_dir = self.work_dir / "history"
+            results_dir.mkdir(parents=True, exist_ok=True)
 
 
-        test_ds = Datasets(self.config, "test")
+        elif split == "test":
+            # test 시 저장된 디렉토리 불러옴
+            self.work_dir = Path(self.config.model.save_work_dir)
+            results_dir = self.get_next_result_dir("test")
 
-        if self.adapter.load(self.work_dir):
-            results = self.adapter.predict(test_ds)
-            metrics = self.save_results(results, results_dir, "test")
-            return metrics
+            test_ds = Datasets(self.config, "test")
 
+            if not self.adapter.load(self.work_dir):
+                raise ValueError("모델 로드에 실패했습니다.")
+
+            results = self.adapter.test(test_ds)
+
+
+        self.save_results(results, results_dir, split)
+
+        return results_dir
+
+
+    def save_results(self, results: dict, path: Path, split: Split) -> Path:
+
+        # raw results 백업
+        with open(path / "results_raw.json", "w", encoding="utf-8") as f:
+            json.dump(results, f, ensure_ascii=False, indent=2)
+
+        if split == "train":
+            # XGBoostAdapter.fit() 결과 포맷 가정:
+            # {
+            #   "split": "train",
+            #   "train_metrics": {...},
+            #   "valid_metrics": {...},
+            #   "loss": {
+            #       "metric_name": str,
+            #       "tasks": [ {"train": [...], "valid": [...]}, ... ]
+            #   },
+            # }
+            train_metrics = results["train_metrics"]
+            valid_metrics = results["valid_metrics"]
+            loss = results["loss"]
+
+            train_dir = path / "train_metrics"
+            valid_dir = path / "valid_metrics"
+            loss_dir = path / "loss"
+
+            train_dir.mkdir(parents=True, exist_ok=True)
+            valid_dir.mkdir(parents=True, exist_ok=True)
+            loss_dir.mkdir(parents=True, exist_ok=True)
+
+            # train/valid 지표 + 스텝/클래스별 그래프
+            save_metrics_artifacts(train_metrics, train_dir)
+            save_metrics_artifacts(valid_metrics, valid_dir)
+
+            # task별 metric history (eval metric curve)
+            save_history_artifacts(loss, loss_dir)
+
+        elif split == "test":
+            # XGBoostAdapter.test() 결과 포맷 가정:
+            # {
+            #   "split": "test",
+            #   "metrics_overall": {...},
+            #   "metrics_by_ratio": {
+            #       pattern_value: {
+            #           ratio: {...},  # compute_multitask_classification_metrics 결과
+            #           ...
+            #       },
+            #       ...
+            #   },
+            # }
+            overall = results["metrics_overall"]
+            by_ratio = results["metrics_by_ratio"]
+
+            overall_dir = path / "overall"
+            overall_dir.mkdir(parents=True, exist_ok=True)
+            save_metrics_artifacts(overall, overall_dir)
+
+            ratio_base_dir = path / "by_ratio"
+            ratio_base_dir.mkdir(parents=True, exist_ok=True)
+
+            # 패턴별 / ratio별 지표 + ratio 곡선
+            for pattern, ratio_dict in by_ratio.items():
+                pattern_dir = ratio_base_dir / f"pattern_{pattern}"
+                pattern_dir.mkdir(parents=True, exist_ok=True)
+
+                # 각 ratio별 metrics 저장
+                for ratio_value, m in ratio_dict.items():
+                    r_dir = pattern_dir / f"ratio_{ratio_value}"
+                    r_dir.mkdir(parents=True, exist_ok=True)
+                    save_metrics_artifacts(m, r_dir)
+
+                # ratio에 따른 꺾은선 (accuracy, f1_macro)
+                plot_metric_over_ratio(
+                    metrics_by_ratio=ratio_dict,
+                    metric_key="accuracy",
+                    save_dir=pattern_dir,
+                    prefix=f"{pattern}",
+                )
+                # f1_macro가 있는 경우에만
+                sample_metrics = next(iter(ratio_dict.values()))
+                if "f1_macro" in sample_metrics["overall"]:
+                    plot_metric_over_ratio(
+                        metrics_by_ratio=ratio_dict,
+                        metric_key="f1_macro",
+                        save_dir=pattern_dir,
+                        prefix=f"{pattern}",
+                    )
         else:
-            raise ValueError("모델 로드에 실패했습니다.")
+            raise ValueError(f"알 수 없는 split: {split}")
 
-
-    def save_results(self, results, path, split: Split):
-        metrics = self.todo_fun(results)
-        metric_dir = self.work_dir / "metrics"
-        metric_dir.mkdir(parents=True, exist_ok=True)
-        self.save_metrics(metrics, metric_dir)
-        return metrics
+        return path
 
 
 
-    def todo_fun(self, results):
-        pass
+
+    def get_next_result_dir(self, prefix: str):
+        exist_idx = []
+
+        ws_dir = self.work_dir / "test"
+        ws_dir.mkdir(parents=True, exist_ok=True)
+
+        for p in ws_dir.iterdir():
+            if p.is_dir() and p.name.startswith(prefix + "_"):
+                _, idx = p.name.split("_")
+
+                idx = int(idx)
+                exist_idx.append(idx)
 
 
-    def save_metrics(self, metrics, path):
-        pass
+        target_idx = max(exist_idx) + 1 if len(exist_idx) > 0 else 0
+
+        dir_name = f"{prefix}_{target_idx}"
+
+        result_dir = ws_dir / dir_name
+        result_dir.mkdir(parents=True, exist_ok=True)
+
+        return result_dir
+
 
 
 

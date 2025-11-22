@@ -3,7 +3,6 @@
 import argparse
 
 from src.configs.configs import Config
-from src.datasets.data_class import Datasets
 from src.trainer.trainer import Trainer
 from src.utils.seed_util import set_seeds
 
@@ -24,14 +23,9 @@ def main(config: Config):
 
     args = parse_args()
 
-    if args.mode == "train":
-        trainer.train()
+    results_dir = trainer.run(args.mode)
 
-    elif args.mode == "test":
-        trainer.test()
-
-
-
+    print(f"[{args.mode}] Results are saved in: {results_dir}")
 
 
 if __name__ == "__main__":
