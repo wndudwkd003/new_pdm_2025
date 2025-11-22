@@ -9,8 +9,7 @@
 
 from dataclasses import dataclass, field
 
-from params.model_map import ModelParams
-from src.params.data_model import DatasetType, ModelType, StageType, ModelSize
+from src.params.data_model import DatasetType, ModelType, StageType, ModelSize, ModelParams
 from src.params.scenario import MissingScenario, MissingPattern, ImputeMethod # , StackMode
 
 
@@ -18,7 +17,6 @@ from src.params.scenario import MissingScenario, MissingPattern, ImputeMethod # 
 @dataclass
 class Data:
     datasets: DatasetType = DatasetType.MPTMS
-    split_ratio: float = 0.8
     skip_header: bool = True
     num_workers: int = 1
     missing_patterns: list[MissingPattern] = field(default_factory=lambda: [MissingPattern.MCAR])
@@ -44,10 +42,10 @@ class Train:
 
 @dataclass
 class Model:
-    model: ModelType = ModelType.XGBOOST
+    model: ModelType = ModelType.MDBE_1
     eval_metric: str = "mlogloss"
     objective: str = "multi:softprob"
-    stage: StageType = StageType.FINETUNE
+    stage: StageType = StageType.PRETRAIN
     other_prefix: str = ""
     save_work_dir: str = "outputs/2025-11-22_03-47-58_xgboost-0.0_to_0.5_0.1step-finetune"
     model_size: ModelSize = ModelSize.SMALL

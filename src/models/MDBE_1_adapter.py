@@ -319,7 +319,7 @@ class MDBE_1_Adapter(BaseModelAdapter):
         input_dim: int,
         num_class: int,
     ):
-        return HybridDoubleBranchEncoder(
+        model = HybridDoubleBranchEncoder(
             input_dim=input_dim,
             embed_dim=self.config.params.embed_dim,
             feature_hidden_dims=self.config.params.feature_hidden_dims,
@@ -329,8 +329,9 @@ class MDBE_1_Adapter(BaseModelAdapter):
             decoder_hidden_dim=self.config.params.decoder_hidden_dim,
             total_layer=self.config.params.total_layer,
             horizon=self.horizon,
+        ).to(self.device)
+        return model
 
-        )
 
 
 

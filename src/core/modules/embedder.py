@@ -13,7 +13,7 @@ class Embedder(nn.Module):
         B, S, F = x.shape
 
         x_exp = x.unsqueeze(-1)                                 # (B,S,F,1)
-        emb: torch.Tensor = self.linear(x_exp)                  # (B,S,F,D)
+        emb: torch.Tensor = self.encoder(x_exp)                  # (B,S,F,D)
 
         bemv_exp = bemv.unsqueeze(-1)                           # (B,S,F,1)
         bemv_emb = bemv_exp.expand(B, S, F, emb.size(-1))

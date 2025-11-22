@@ -9,8 +9,6 @@ decoder --> gru
 
 import torch
 import torch.nn as nn
-
-from core.modules.decoders import MPIDModel
 from src.core.modules.embedder import Embedder
 from src.core.modules.encoders import MPIEModel
 from src.core.modules.decoders import MPIDModel
@@ -80,16 +78,15 @@ class HybridDoubleBranchEncoder(nn.Module):
         bemv:   torch.Tensor,
     ) ->        torch.Tensor:
 
+        # todo 결측 의존 비의존 제대로
         x_emb, bemv_emb = self.embedder(x, bemv)
-
-        h = self.mpie(x_emb)
-
+        x_feat = self.mpie(x_emb)
         hs = []
 
         for i in range(self.input_dim):
-            xf = h[:, :, i, :]
-            h = self.sequence_encoders[i](xf)
-            hs.append(h)
+            xf = x_feat[:, :, i, :]
+            h_i = self.sequence_encoders[i](xf)
+            hs.append(h_i)
 
         hs = torch.stack(hs, dim=2)
 
@@ -100,10 +97,10 @@ class HybridDoubleBranchEncoder(nn.Module):
         B = x.size(0)
         latent = hs.mean(dim=1)
         latent = latent.reshape(B, -1)
-        h = self.latent_to_decoder(latent).unsqueeze(0)
+
+        h_dec = self.latent_to_decoder(latent).unsqueeze(0)
 
         logits_list = []
-
         y_prev = torch.full(
             (B,),
             self.start_idx,
@@ -114,12 +111,9 @@ class HybridDoubleBranchEncoder(nn.Module):
 
         for t in range(self.horizon):
             dec_in = self.class_embed(y_prev).unsqueeze(1)
-            out, h = self.decoder_gru(dec_in, h)
-
+            out, h_dec = self.decoder_gru(dec_in, h_dec)
             logits = self.decoder_out(out.squeeze(1))
             logits_list.append(logits)
-
-
             y_prev = torch.argmax(logits, dim=-1)
 
         logits = torch.stack(logits_list, dim=1)

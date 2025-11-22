@@ -1,4 +1,5 @@
 from enum import Enum
+from dataclasses import dataclass, field
 
 class DatasetType(Enum):
     MPTMS = "datasets/MPTMS/processed_data"
@@ -6,6 +7,7 @@ class DatasetType(Enum):
 
 class ModelType(Enum):
     XGBOOST = "xgboost"
+    MDBE_1 = "mdbe_1"
 
 class StageType(Enum):
     PRETRAIN = "pretrain"
@@ -20,3 +22,13 @@ class Split(Enum):
     TRAIN = "train"
     VALID = "valid"
     TEST = "test"
+
+
+@dataclass
+class ModelParams:
+    embed_dim: int = 0
+    feature_hidden_dims: list[int] = field(default_factory=list)
+    nhead: int = 0
+    transformer_layers: int = 0
+    decoder_hidden_dim: int = 0
+    total_layer: int = 0

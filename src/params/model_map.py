@@ -1,21 +1,15 @@
-from dataclasses import dataclass, field
-from src.params.data_model import ModelType, ModelSize
+
+from src.params.data_model import ModelType, ModelSize, ModelParams
 from src.models.xgboost_adapter import XGBoostAdapter
+from src.models.MDBE_1_adapter import MDBE_1_Adapter
 
 MODEL_MAP = {
     ModelType.XGBOOST: XGBoostAdapter,
-
+    ModelType.MDBE_1: MDBE_1_Adapter,
 }
 
 
-@dataclass
-class ModelParams:
-    embed_dim: int = 0
-    feature_hidden_dims: list[int] = field(default_factory=list)
-    nhead: int = 0
-    transformer_layers: int = 0
-    decoder_hidden_dim: int = 0
-    total_layer: int = 0
+
 
 
 
