@@ -1,16 +1,47 @@
 # scripts/run.py
 
+import argparse
+
 from src.configs.configs import Config
 from src.datasets.data_class import Datasets
+from src.trainer.trainer import Trainer
+from src.utils.seed_util import set_seeds
 
 
-def main():
-    pass
+def parse_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--mode", type=str, choices=["train", "test"], default="train")
+    return parser.parse_args()
+
+
+def build_config():
+    config = Config()
+    return config
+
+def main(config: Config):
+
+    trainer = Trainer(config)
+
+    args = parse_args()
+
+    if args.mode == "train":
+        trainer.train()
+
+    elif args.mode == "test":
+        trainer.test()
+
+
 
 
 
 if __name__ == "__main__":
-    pass
+    #todo: yaml로 파싱해서 불러오는거 해야함
+    config = build_config()
+
+    # 시드 고정 확실히 됨
+    set_seeds(config.train.seed)
+
+    main(config)
 
 
 

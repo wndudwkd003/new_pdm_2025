@@ -1,5 +1,7 @@
 # src/models/xgboost_adapter.py
 
+import numpy as np
+
 from xgboost import XGBClassifier
 from pathlib import Path
 
@@ -60,6 +62,22 @@ class XGBoostAdapter(BaseModelAdapter):
         self.results["eval_results"] = eval_results # 전체 평가 결과 저장
 
         return self.results
+
+    def predict(
+        self,
+        X: np.ndarray,
+    ) -> np.ndarray:
+        if self.models is None:
+            raise ValueError("모델이 학습되거나 로드되지 않았습니다.")
+
+        preds = []
+        for model in self.models:
+            y_hat = model.predict(X)   # (N,)
+            preds.append(y_hat)
+
+        y_pred = np.stack(preds, axis=1)  # (N, T)
+        return y_pred
+
 
 
     def save(

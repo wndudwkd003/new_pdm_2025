@@ -4,3 +4,4 @@ from src.models.xgboost_adapter import XGBoostAdapter
 
 Split = Literal["train", "valid", "test"]
 
+Workspace = Literal["configs", "scripts", "src"]

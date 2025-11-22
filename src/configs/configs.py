@@ -10,7 +10,7 @@
 from dataclasses import dataclass, field
 from turtle import st
 
-from params.data_model import DatasetType, ModelType
+from params.data_model import DatasetType, ModelType, StageType
 from params.scenario import (
     MissingScenario, MissingPattern, StackMode, ImputeMethod
 )
@@ -42,25 +42,29 @@ class Data:
     mask_fill: float
 
 
-
-
 @dataclass
 class Train:
     epochs: int
     batch_size: int
     lr: float
     device: str
-    output_dir: str
+    output_dir: str = "outputs"
     seed: int
     early_stopping_rounds: int
 
 
 @dataclass
 class Model:
-    model: ModelType
+    model: ModelType = ModelType.XGBOOST
 
     eval_metric: str
     objective: str
+
+    stage: StageType = StageType.FINETUNE
+
+    other_prefix: str = ""
+
+    save_work_dir: str = ""
 
 
 

@@ -2,6 +2,8 @@ from enum import Enum
 
 from attr import dataclass
 
+from src.models.xgboost_adapter import XGBoostAdapter
+
 
 class DatasetType(Enum):
     MPTMS = "datasets/MPTMS/processed_data"
@@ -13,4 +15,9 @@ class DatasetType(Enum):
 
 
 class ModelType(Enum):
-    XGBOOST = "xgboost"
+    XGBOOST = XGBoostAdapter
+
+
+class StageType(Enum):
+    PRETRAIN = "pretrain"
+    FINETUNE = "finetune"
