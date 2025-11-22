@@ -24,13 +24,13 @@ class Data:
     target_missing_ratio: float = 0.5
     start_missing_ratio: float  = 0.0
     step_missing_ratio: float   = 0.1
-    impute_method: ImputeMethod = ImputeMethod.MEAN
+    impute_method: ImputeMethod = ImputeMethod.ZERO
     # stack_mode: StackMode
 
 @dataclass
 class Train:
-    epochs: int = 100
-    batch_size: int = 32
+    epochs: int = 1000
+    batch_size: int = 128
     lr: float = 1e-3
     device: str = "cuda"
     output_dir: str = "outputs"
@@ -48,7 +48,7 @@ class Model:
     stage: StageType = StageType.PRETRAIN
     other_prefix: str = ""
     save_work_dir: str = "outputs/2025-11-22_03-47-58_xgboost-0.0_to_0.5_0.1step-finetune"
-    model_size: ModelSize = ModelSize.SMALL
+    model_size: ModelSize = ModelSize.LARGE
 
 @dataclass
 class Config:

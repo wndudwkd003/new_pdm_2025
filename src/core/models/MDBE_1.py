@@ -98,7 +98,12 @@ class HybridDoubleBranchEncoder(nn.Module):
         latent = hs.mean(dim=1)
         latent = latent.reshape(B, -1)
 
-        h_dec = self.latent_to_decoder(latent).unsqueeze(0)
+        h0 = self.latent_to_decoder(latent)
+        h_dec = h0.unsqueeze(0).repeat(
+            self.decoder_gru.num_layers, 1, 1
+        )
+
+
 
         logits_list = []
         y_prev = torch.full(
