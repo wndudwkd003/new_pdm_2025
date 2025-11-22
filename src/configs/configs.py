@@ -40,6 +40,7 @@ class Train:
     early_stopping_rounds: int = 15
     lr_min: float = 1e-5
     tree_method: str = "hist"
+    temperature: float = 0.7
 
 @dataclass
 class Model:

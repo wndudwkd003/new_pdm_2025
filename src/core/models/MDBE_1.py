@@ -122,11 +122,11 @@ class HybridDoubleBranchEncoder(nn.Module):
 
             y_prev = torch.argmax(logits, dim=-1)
 
-        preds = torch.stack(logits_list, dim=1)
+        logits = torch.stack(logits_list, dim=1)
 
         return {
             "recon": recon,
-            "preds": preds,
+            "logits": logits,
             "latent": latent,
         }
 
