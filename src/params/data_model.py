@@ -10,3 +10,10 @@ class ModelType(Enum):
 class StageType(Enum):
     PRETRAIN = "pretrain"
     FINETUNE = "finetune"
+
+class ModelSize(Enum):
+    SMALL = "small"
+    MEDIUM = "medium"
+    LARGE = "large"
+
+

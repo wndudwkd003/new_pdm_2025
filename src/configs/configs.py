@@ -9,7 +9,7 @@
 
 from dataclasses import dataclass, field
 
-from src.params.data_model import DatasetType, ModelType, StageType
+from src.params.data_model import DatasetType, ModelType, StageType, ModelSize
 from src.params.scenario import MissingScenario, MissingPattern, ImputeMethod # , StackMode
 
 
@@ -45,6 +45,7 @@ class Model:
     stage: StageType = StageType.FINETUNE
     other_prefix: str = ""
     save_work_dir: str = "outputs/2025-11-22_03-47-58_xgboost-0.0_to_0.5_0.1step-finetune"
+    model_size: ModelSize = ModelSize.SMALL
 
 @dataclass
 class Config:
@@ -60,4 +61,5 @@ class DatasetMeta:
     categorical_cols: list[str] = field(default_factory=list)
     feature_dim: int = 0
     num_class: int = 0
+
 
