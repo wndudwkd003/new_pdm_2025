@@ -18,7 +18,7 @@ from src.imputer.zero_imputer import ZeroImputer
 
 from src.datasets.dl_collator import DefaultMissingCollator
 
-from src.params.literals import Split
+from src.params.data_model import Split
 from src.params.scenario import (
     MissingScenario, StackMode,
     MissingPattern, ImputeMethod
@@ -299,7 +299,7 @@ class Datasets(Dataset):
     def load_data(
         self,
     ):
-        data_path = Path(self.data_dir) / self.split
+        data_path = Path(self.data_dir) / self.split.value
         jsonl_files = list(data_path.glob("*.jsonl"))
 
         samples: list[dict] = []
@@ -341,7 +341,7 @@ class Datasets(Dataset):
 
         skip_header = 1 if self.config.data.skip_header else 0
 
-        for sample in tqdm(samples, desc=f"Loading CSV/labels ({self.split})"):
+        for sample in tqdm(samples, desc=f"Loading CSV/labels ({self.split.value})"):
             csv_paths   = sample["input_files"]["csvs"]
             label_paths = sample["target_files"]["labels"]
 

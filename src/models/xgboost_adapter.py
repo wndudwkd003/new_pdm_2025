@@ -7,6 +7,7 @@ from xgboost import XGBClassifier
 from pathlib import Path
 
 from src.configs.configs import Config
+from src.params.data_model import Split
 from src.models.base_model_adapter import BaseModelAdapter
 from src.datasets.data_class import Datasets
 from src.utils.metrics import compute_multitask_classification_metrics
@@ -60,7 +61,7 @@ class XGBoostAdapter(BaseModelAdapter):
                 eval_metric=eval_metric,
                 early_stopping_rounds=self.config.train.early_stopping_rounds,
                 device=self.config.train.device,
-                tree_method="hist",
+                tree_method=self.config.train.tree_method,
             )
 
             model.fit(
@@ -76,8 +77,8 @@ class XGBoostAdapter(BaseModelAdapter):
 
             loss_tasks.append(
                 {
-                    "train": train_vals,
-                    "valid": valid_vals,
+                    Split.TRAIN.value: train_vals,
+                    Split.VALID.value: valid_vals,
                 }
             )
 
@@ -92,9 +93,9 @@ class XGBoostAdapter(BaseModelAdapter):
         valid_metrics = compute_multitask_classification_metrics(y_val, y_val_pred)
 
         results = {
-            "split": "train",
-            "train_metrics": train_metrics,
-            "valid_metrics": valid_metrics,
+            "split": Split.TRAIN.value,
+            f"{Split.TRAIN.value}_metrics": train_metrics,
+            f"{Split.VALID.value}_metrics": valid_metrics,
             "loss": {
                 "metric_name": eval_metric,
                 "tasks": loss_tasks, # {"train": [...], "valid": [...]}
@@ -152,7 +153,7 @@ class XGBoostAdapter(BaseModelAdapter):
                 by_ratio[p_v][ratio] = m
 
         results = {
-            "split": "test",
+            "split": Split.TEST.value,
             "metrics_overall": metrics_overall,
             "metrics_by_ratio": by_ratio,
         }
@@ -189,7 +190,7 @@ class XGBoostAdapter(BaseModelAdapter):
         self,
         path: Path
     ):
-        save_dir = path / "train" / "save"
+        save_dir = path / Split.TRAIN.value / "save"
         meta = self.load_meta(save_dir)
 
         save_model_dirs = meta["save_model_dirs"]

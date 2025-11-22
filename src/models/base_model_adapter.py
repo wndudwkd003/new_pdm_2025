@@ -1,5 +1,7 @@
 # src/models/base_model_adapter.py
 
+import torch
+
 from pathlib import Path
 import json
 
@@ -13,6 +15,7 @@ class BaseModelAdapter(ABC):
         config: Config,
     ):
         self.config = config
+        self.model: torch.nn.Module | None = None
 
     @abstractmethod
     def fit(
@@ -73,4 +76,24 @@ class BaseModelAdapter(ABC):
             meta = json.load(f)
 
         return meta
+
+
+
+    def get_deeplearning_utils(self):
+        if self.model is None:
+            raise ValueError("모델이 초기화되지 않았습니다.")
+
+        optimizer = torch.optim.AdamW(
+            self.model.parameters(),
+            self.config.train.lr
+        )
+
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer,
+            T_max=self.config.train.epochs - 1,
+            eta_min=self.config.train.lr_min,
+        )
+
+        return optimizer, scheduler
+
 

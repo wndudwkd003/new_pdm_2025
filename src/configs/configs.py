@@ -9,8 +9,10 @@
 
 from dataclasses import dataclass, field
 
+from params.model_map import ModelParams
 from src.params.data_model import DatasetType, ModelType, StageType, ModelSize
 from src.params.scenario import MissingScenario, MissingPattern, ImputeMethod # , StackMode
+
 
 
 @dataclass
@@ -36,6 +38,8 @@ class Train:
     output_dir: str = "outputs"
     seed: int = 42
     early_stopping_rounds: int = 15
+    lr_min: float = 1e-5
+    tree_method: str = "hist"
 
 @dataclass
 class Model:
@@ -52,6 +56,7 @@ class Config:
     data: Data  = field(default_factory=Data)
     model: Model = field(default_factory=Model)
     train: Train = field(default_factory=Train)
+    params: ModelParams = field(default_factory=ModelParams)
 
 @dataclass
 class DatasetMeta:

@@ -6,9 +6,10 @@ import torch.nn as nn
 class Embedder(nn.Module):
     def __init__(self, embed_dim: int):
         super().__init__()
-        self.linear = nn.Linear(1, embed_dim)
+        self.encoder = nn.Linear(1, embed_dim)  # embedding
+        self.decoder = nn.Linear(embed_dim, 1)  # scalar
 
-    def forward(self, x: torch.Tensor, bemv: torch.Tensor):
+    def encode(self, x: torch.Tensor, bemv: torch.Tensor):
         B, S, F = x.shape
 
         x_exp = x.unsqueeze(-1)                                 # (B,S,F,1)
@@ -18,3 +19,12 @@ class Embedder(nn.Module):
         bemv_emb = bemv_exp.expand(B, S, F, emb.size(-1))
 
         return emb, bemv_emb
+
+
+    def decode(self, x: torch.Tensor):
+        x_rec = self.decoder(x).squeeze(-1)
+        return x_rec
+
+
+    def forward(self, x: torch.Tensor, bemv: torch.Tensor):
+        return self.encode(x, bemv)

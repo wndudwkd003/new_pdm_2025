@@ -6,7 +6,8 @@ from dataclasses import asdict
 import json, shutil
 
 from src.configs.configs import Config
-from src.params.literals import Split, Workspace
+from src.params.literals import Workspace
+from src.params.data_model import Split
 from src.params.model_map import MODEL_MAP
 from src.datasets.data_class import Datasets
 from src.utils.eval_viz import (
@@ -61,14 +62,14 @@ class Trainer:
 
 
     def run(self, split: Split):
-        if split == "train":
+        if split == Split.TRAIN:
             # train 시 작업 디렉토리 생성
             self.work_dir = self.get_work_dir()
 
-            train_ds = Datasets(self.config, "train")
-            valid_ds = Datasets(self.config, "valid")
+            train_ds = Datasets(self.config, Split.TRAIN)
+            valid_ds = Datasets(self.config, Split.VALID)
 
-            model_save_dir = self.work_dir / split
+            model_save_dir = self.work_dir / split.value
             model_save_dir.mkdir(parents=True, exist_ok=True)
 
             results = self.adapter.fit(train_ds, valid_ds)
@@ -78,12 +79,12 @@ class Trainer:
             results_dir.mkdir(parents=True, exist_ok=True)
 
 
-        elif split == "test":
+        elif split == Split.TEST:
             # test 시 저장된 디렉토리 불러옴
             self.work_dir = Path(self.config.model.save_work_dir)
             results_dir = self.get_next_result_dir("test")
 
-            test_ds = Datasets(self.config, "test")
+            test_ds = Datasets(self.config, Split.TEST)
 
             if not self.adapter.load(self.work_dir):
                 raise ValueError("모델 로드에 실패했습니다.")
@@ -102,7 +103,7 @@ class Trainer:
         with open(path / "results_raw.json", "w", encoding="utf-8") as f:
             json.dump(results, f, ensure_ascii=False, indent=2)
 
-        if split == "train":
+        if split == Split.TRAIN:
             # XGBoostAdapter.fit() 결과 포맷 가정:
             # {
             #   "split": "train",
@@ -113,12 +114,12 @@ class Trainer:
             #       "tasks": [ {"train": [...], "valid": [...]}, ... ]
             #   },
             # }
-            train_metrics = results["train_metrics"]
-            valid_metrics = results["valid_metrics"]
+            train_metrics = results[f"{Split.TRAIN.value}_metrics"]
+            valid_metrics = results[f"{Split.VALID.value}_metrics"]
             loss = results["loss"]
 
-            train_dir = path / "train_metrics"
-            valid_dir = path / "valid_metrics"
+            train_dir = path / f"{Split.TRAIN.value}_metrics"
+            valid_dir = path / f"{Split.VALID.value}_metrics"
             loss_dir = path / "loss"
 
             train_dir.mkdir(parents=True, exist_ok=True)
@@ -132,7 +133,7 @@ class Trainer:
             # task별 metric history (eval metric curve)
             save_history_artifacts(loss, loss_dir)
 
-        elif split == "test":
+        elif split == Split.TEST:
             # XGBoostAdapter.test() 결과 포맷 가정:
             # {
             #   "split": "test",
@@ -193,7 +194,7 @@ class Trainer:
     def get_next_result_dir(self, prefix: str):
         exist_idx = []
 
-        ws_dir = self.work_dir / "test"
+        ws_dir = self.work_dir / Split.TEST.value
         ws_dir.mkdir(parents=True, exist_ok=True)
 
         for p in ws_dir.iterdir():

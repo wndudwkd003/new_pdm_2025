@@ -16,4 +16,7 @@ class ModelSize(Enum):
     MEDIUM = "medium"
     LARGE = "large"
 
-
+class Split(Enum):
+    TRAIN = "train"
+    VALID = "valid"
+    TEST = "test"
