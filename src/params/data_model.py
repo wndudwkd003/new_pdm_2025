@@ -7,7 +7,16 @@ class DatasetType(Enum):
 
 class ModelType(Enum):
     XGBOOST = "xgboost"
+    LIGHTGBM = "lightgbm"
+    RANDOMFOREST = "randomforest"
+
+    #
     MDBE_1 = "mdbe_1"
+    MDBE_1_BALANCED = "mdbe_1_balanced"
+
+
+
+    MDBE_1_XGB = "mdbe_1_xgb"
 
 class StageType(Enum):
     PRETRAIN = "pretrain"

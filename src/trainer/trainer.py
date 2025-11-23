@@ -5,7 +5,7 @@ from datetime import datetime
 from dataclasses import asdict
 import json, shutil
 
-from src.configs.configs import Config
+from src.configs.configs import Config, StaticMeta
 from src.params.literals import Workspace
 from src.params.data_model import Split
 from src.params.model_map import MODEL_MAP
@@ -22,6 +22,8 @@ class Trainer:
         config: Config,
     ):
         self.config = config
+
+        self.static_meta = StaticMeta()
 
         self.model_type = config.model.model
         self.stage_type = config.model.stage
@@ -40,10 +42,21 @@ class Trainer:
 
         stage = self.stage_type.name.lower()
 
+        model_size = self.config.model.model_size.name.lower()
+
         other_prefix = self.config.model.other_prefix
         other_prefix = f"-{other_prefix}" if other_prefix != "" else ""
 
-        run_name = f"{now}_{mn}-{sr}_to_{tr}_{step}step-{stage}{other_prefix}"
+        missing_scenario = self.config.data.missing_scenario.value
+        missing_patterns = "_".join([p.value for p in self.config.data.missing_patterns])
+        impute_method = self.config.data.impute_method.value
+
+
+        sm = self.static_meta
+
+        static_meta = f"{self.config.data.datasets.name.lower()}_{sm.forward}_{sm.backward}_{sm.interval}s"
+
+        run_name = f"{now}_{mn}_{sr}_to_{tr}_{step}_step_{stage}_{model_size}_{missing_scenario}_{missing_patterns}_{impute_method}_{static_meta}{other_prefix}"
 
         # ws dir 생성
         work_dir = Path(self.config.train.output_dir) / run_name

@@ -16,7 +16,7 @@ from src.core.utils.losses import info_nce_loss
 from src.params.data_model import Split, StageType
 
 
-class MDBE_1_Adapter(BaseModelAdapter):
+class MDBE_1_BALANCED_Adapter(BaseModelAdapter):
     def __init__(
         self,
         config: Config,
@@ -26,6 +26,7 @@ class MDBE_1_Adapter(BaseModelAdapter):
         self.model: HybridDoubleBranchEncoder | None = None
         self.device = self.config.train.device
         self.train_mode = self.config.model.stage
+        self.class_weight: torch.Tensor | None = None  # ← 추가
 
 
     def fit(
@@ -43,6 +44,26 @@ class MDBE_1_Adapter(BaseModelAdapter):
 
         self.model = self._get_model(self.feature_dim, self.num_class)
         self.model.to(self.device)
+
+        if self.train_mode == StageType.FINETUNE:
+            # GBDT용 데이터에서 전체 y를 가져와서 분포 계산
+            _, y_all = train_data.get_data_for_gbdt()   # y_all: (N, H)
+            y_all_flat = torch.as_tensor(y_all.reshape(-1), dtype=torch.long)
+
+            K = self.num_class
+            counts = torch.bincount(y_all_flat, minlength=K).float()  # (K,)
+            total = counts.sum()
+
+            # n_c 가 0인 클래스가 있어도 0으로 나누지 않도록 보정
+            counts_safe = torch.where(counts > 0, counts, torch.ones_like(counts))
+
+            # sklearn class_weight="balanced"와 같은 공식: N / (K * n_c)
+            class_weight = total / (K * counts_safe)
+
+            self.class_weight = class_weight.to(self.device)
+            print(f"[MDBE_1_Adapter] class_weight (balanced): {self.class_weight}")
+        else:
+            self.class_weight = None
 
         optimizer, scheduler = self.get_deeplearning_utils()
 
@@ -287,7 +308,15 @@ class MDBE_1_Adapter(BaseModelAdapter):
                     logits_flat = logits.reshape(B * H, C)
                     y_flat = y.reshape(B * H)
 
-                    loss = F.cross_entropy(logits_flat, y_flat)
+
+                    if self.class_weight is not None:
+                        loss = F.cross_entropy(
+                            logits_flat,
+                            y_flat,
+                            weight=self.class_weight,
+                        )
+                    else:
+                        loss = F.cross_entropy(logits_flat, y_flat)
 
                 if is_train:
                     optimizer.zero_grad()

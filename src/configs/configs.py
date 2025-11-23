@@ -13,18 +13,27 @@ from src.params.data_model import DatasetType, ModelType, StageType, ModelSize, 
 from src.params.scenario import MissingScenario, MissingPattern, ImputeMethod # , StackMode
 
 
+@dataclass
+class StaticMeta:
+    backward: int = 10
+    forward: int = 30
+    interval: int = 3
+
+
+
 
 @dataclass
 class Data:
     datasets: DatasetType = DatasetType.MPTMS
     skip_header: bool = True
-    num_workers: int = 1
+    data_load_workers: int = 6
+    num_workers: int = 2
     missing_patterns: list[MissingPattern] = field(default_factory=lambda: [MissingPattern.MCAR])
     missing_scenario: MissingScenario = MissingScenario.MULTI # SINGLE, MULTI
     target_missing_ratio: float = 0.5
     start_missing_ratio: float  = 0.0
     step_missing_ratio: float   = 0.1
-    impute_method: ImputeMethod = ImputeMethod.ZERO
+    impute_method: ImputeMethod = ImputeMethod.MEAN
     # stack_mode: StackMode
 
 @dataclass
@@ -42,13 +51,24 @@ class Train:
 
 @dataclass
 class Model:
-    model: ModelType = ModelType.MDBE_1
+    model: ModelType = ModelType.MDBE_1_BALANCED
+    stage: StageType = StageType.FINETUNE
+    other_prefix: str = ""
+    save_work_dir: str = "outputs/2025-11-23_07-05-17_xgboost_0.0_to_0.0_0.1_step_finetune_large_multi_mcar_zero_mptms_30_10_3s"
+    model_size: ModelSize = ModelSize.SMALL
+
+    # xgboost
     eval_metric: str = "mlogloss"
     objective: str = "multi:softprob"
-    stage: StageType = StageType.PRETRAIN
-    other_prefix: str = ""
-    save_work_dir: str = "outputs/2025-11-22_03-47-58_xgboost-0.0_to_0.5_0.1step-finetune"
-    model_size: ModelSize = ModelSize.LARGE
+
+
+    # light gbm
+    lgbm_objective: str = "multiclass"
+    lgbm_metric: str = "multi_logloss"
+    lgbm_class_weight: str = "balanced"
+
+
+
 
 @dataclass
 class Config:

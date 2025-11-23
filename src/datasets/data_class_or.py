@@ -1,7 +1,6 @@
 # src/datasets/data_class.py
 
-import os
-from concurrent.futures import ProcessPoolExecutor
+
 from torch.utils.data import Dataset, DataLoader
 
 import numpy as np
@@ -35,37 +34,6 @@ IMPUTER_MAP = {
     ImputeMethod.MEAN: MeanImputer,
     ImputeMethod.ZERO: ZeroImputer,
 }
-
-def _load_single_sample(args):
-    idx, sample, skip_header = args
-
-    csv_paths   = sample["input_files"]["csvs"]
-    label_paths = sample["target_files"]["labels"]
-
-    rows = []
-    ys = []
-
-    for csv_path in csv_paths:
-        row = np.loadtxt(
-            csv_path,
-            delimiter=",",
-            dtype=np.float32,
-            skiprows=skip_header,
-        )
-        rows.append(row)
-
-    for label_path in label_paths:
-        with open(label_path, "r", encoding="utf-8") as f:
-            d = json.load(f)
-        state = d["annotations"][0]["tagging"][0]["state"]
-        ys.append(state)
-
-    x_ts = np.stack(rows, axis=0)
-    y_vec = np.array(ys, dtype=np.int64)
-
-    return idx, x_ts, y_vec
-
-
 
 
 class Datasets(Dataset):
@@ -367,35 +335,46 @@ class Datasets(Dataset):
         self,
         samples: list[dict],
     ):
+
+        X_list = []
+        y_list = []
+
         skip_header = 1 if self.config.data.skip_header else 0
 
-        num_samples = len(samples)
-        X_results: list[tuple[np.ndarray, np.ndarray] | None] = [None] * num_samples
+        for sample in tqdm(samples, desc=f"Loading CSV/labels ({self.split.value})"):
+            csv_paths   = sample["input_files"]["csvs"]
+            label_paths = sample["target_files"]["labels"]
 
-        # ProcessPoolExecutor를 사용해서 병렬로 샘플 로딩
-        num_workers = self.config.data.data_load_workers
+            rows = []
+            ys = []
 
-        args_iter = [
-            (idx, sample, skip_header)
-            for idx, sample in enumerate(samples)
-        ]
+            for csv_path in csv_paths:
+                # row = np.genfromtxt(
+                #     csv_path,
+                #     delimiter=',',
+                #     dtype=np.float32,
+                #     skip_header=skip_header,
+                # )
+                # rows.append(row)
 
-        with ProcessPoolExecutor(max_workers=num_workers) as executor:
-            # executor.map 은 입력 순서를 보장하므로,
-            # tqdm 으로 진행상황을 보면서 index, x_ts, y_vec 을 그대로 받아서 저장
-            for idx, x_ts, y_vec in tqdm(
-                executor.map(_load_single_sample, args_iter),
-                total=num_samples,
-                desc=f"Loading CSV/labels ({self.split.value})"
-            ):
-                X_results[idx] = (x_ts, y_vec)
+                row = np.loadtxt(
+                    csv_path,
+                    delimiter=',',
+                    dtype=np.float32,
+                    skiprows=skip_header,
+                )
+                rows.append(row)
 
-        X_list: list[np.ndarray] = []
-        y_list: list[np.ndarray] = []
+            for label_path in label_paths:
+                with open(label_path, "r", encoding="utf-8") as f:
+                    d = json.load(f)
 
-        # idx 순서대로 다시 꺼내서 스택 → 원래 samples 순서 보존
-        for idx in range(num_samples):
-            x_ts, y_vec = X_results[idx]
+                state = d["annotations"][0]["tagging"][0]["state"]
+                ys.append(state)
+
+            x_ts = np.stack(rows, axis=0)
+            y_vec = np.array(ys, dtype=np.int64)
+
             X_list.append(x_ts)
             y_list.append(y_vec)
 
