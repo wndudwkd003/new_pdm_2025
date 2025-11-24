@@ -4,10 +4,10 @@ from pathlib import Path
 from datetime import datetime
 from dataclasses import asdict
 import json, shutil
-
+from src.models.base_model_adapter import BaseModelAdapter
 from src.configs.configs import Config, StaticMeta
 from src.params.literals import Workspace
-from src.params.data_model import Split
+from src.params.data_model import Split, StageType
 from src.params.model_map import MODEL_MAP
 from src.datasets.data_class import Datasets
 from src.utils.eval_viz import (
@@ -28,7 +28,7 @@ class Trainer:
         self.model_type = config.model.model
         self.stage_type = config.model.stage
 
-        self.adapter = MODEL_MAP[self.model_type](config)
+        self.adapter: BaseModelAdapter = MODEL_MAP[self.model_type](config)
 
 
     def get_work_dir(self):
@@ -84,6 +84,12 @@ class Trainer:
 
             model_save_dir = self.work_dir / split.value
             model_save_dir.mkdir(parents=True, exist_ok=True)
+
+            if self.config.model.stage == StageType.FINETUNE:
+                pre_trained_dir = Path(self.config.model.save_work_dir)
+                if not self.adapter.load(pre_trained_dir):
+                    raise ValueError("사전학습된 모델 로드에 실패했습니다.")
+                print(f"Pre-trained model loaded from {pre_trained_dir}")
 
             results = self.adapter.fit(train_ds, valid_ds)
             self.adapter.save(model_save_dir)

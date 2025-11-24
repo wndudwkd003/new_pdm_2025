@@ -7,6 +7,7 @@ from src.trainer.trainer import Trainer
 from src.params.data_model import Split
 from src.utils.seed_util import set_seeds
 from src.params.model_map import MODEL_SIZE_MAP
+from src.params.data_model import ModelSize
 
 
 def parse_args():
@@ -17,7 +18,8 @@ def parse_args():
 
 def build_config():
     config = Config()
-    config.params = MODEL_SIZE_MAP[config.model.model_size]
+    if config.model.model_size != ModelSize.NONE:
+        config.params = MODEL_SIZE_MAP[config.model.model_size]
     return config
 
 def main(config: Config):

@@ -99,8 +99,8 @@ class HybridDoubleBranchEncoder(nn.Module):
     ) -> dict[str, torch.Tensor]:
 
         # ===== 인코더 브랜치 =====
-        x_emb, bemv_emb = self.embedder(x, bemv)   # 예: (B, S, F, E)
-        x_feat = self.mpie(x_emb)                  # (B, S, F, D_enc)
+        x_emb, bemv_emb = self.embedder(x, bemv)
+        x_feat = self.mpie(x_emb, bemv_emb)
 
         hs_list = []
         for i in range(self.input_dim):

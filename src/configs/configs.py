@@ -26,14 +26,14 @@ class StaticMeta:
 class Data:
     datasets: DatasetType = DatasetType.MPTMS
     skip_header: bool = True
-    data_load_workers: int = 6
-    num_workers: int = 2
+    data_load_workers: int = 10
+    num_workers: int = 10
     missing_patterns: list[MissingPattern] = field(default_factory=lambda: [MissingPattern.MCAR])
     missing_scenario: MissingScenario = MissingScenario.MULTI # SINGLE, MULTI
     target_missing_ratio: float = 0.5
     start_missing_ratio: float  = 0.0
     step_missing_ratio: float   = 0.1
-    impute_method: ImputeMethod = ImputeMethod.MEAN
+    impute_method: ImputeMethod = ImputeMethod.ZERO
     # stack_mode: StackMode
 
 @dataclass
@@ -51,11 +51,11 @@ class Train:
 
 @dataclass
 class Model:
-    model: ModelType = ModelType.MDBE_1_BALANCED
-    stage: StageType = StageType.FINETUNE
+    model: ModelType = ModelType.XGBOOST
+    stage: StageType = StageType.NONE
     other_prefix: str = ""
-    save_work_dir: str = "outputs/2025-11-23_07-05-17_xgboost_0.0_to_0.0_0.1_step_finetune_large_multi_mcar_zero_mptms_30_10_3s"
-    model_size: ModelSize = ModelSize.SMALL
+    save_work_dir: str = "outputs/2025-11-24_04-29-49_xgboost_0.0_to_0.5_0.1_step_none_none_multi_mcar_zero_mptms_30_10_3s" # ""
+    model_size: ModelSize = ModelSize.NONE
 
     # xgboost
     eval_metric: str = "mlogloss"

@@ -5,6 +5,10 @@ from src.models.lightgbm_adapter import LightGBMAdapter
 from src.models.rf_adapter import RandomForestAdapter
 from src.models.MDBE_1_adapter import MDBE_1_Adapter
 from src.models.MDBE_1_balanced_adapter import MDBE_1_BALANCED_Adapter
+from src.models.MDBE_1_e2e_adapter import MDBE_1_E2E_Adapter
+
+from src.models.MDBE_2_adapter import MDBE_2_Adapter
+
 
 
 MODEL_MAP = {
@@ -24,6 +28,14 @@ MODEL_MAP = {
 
     ModelType.MDBE_1: MDBE_1_Adapter,
     ModelType.MDBE_1_BALANCED: MDBE_1_BALANCED_Adapter,
+    ModelType.MDBE_1_E2E: MDBE_1_E2E_Adapter,
+
+
+
+    ModelType.MDBE_2: MDBE_2_Adapter,
+
+
+
 }
 
 

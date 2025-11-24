@@ -60,6 +60,11 @@ class BaseModelAdapter(ABC):
         with open(meta_path, "w", encoding="utf-8") as f:
             json.dump(meta, f, indent=4)
 
+    def test(
+        self,
+        test_data,
+    ):
+        pass
 
 
 

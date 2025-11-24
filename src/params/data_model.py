@@ -13,16 +13,19 @@ class ModelType(Enum):
     #
     MDBE_1 = "mdbe_1"
     MDBE_1_BALANCED = "mdbe_1_balanced"
-
-
+    MDBE_1_E2E = "mdbe_1_e2e"
 
     MDBE_1_XGB = "mdbe_1_xgb"
 
+    MDBE_2 = "mdbe_2"
+
 class StageType(Enum):
+    NONE = ""
     PRETRAIN = "pretrain"
     FINETUNE = "finetune"
 
 class ModelSize(Enum):
+    NONE = ""
     SMALL = "small"
     MEDIUM = "medium"
     LARGE = "large"
