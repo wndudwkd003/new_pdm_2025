@@ -51,10 +51,10 @@ class Train:
 
 @dataclass
 class Model:
-    model: ModelType = ModelType.XGBOOST
+    model: ModelType = ModelType.FTTRANSFORMER
     stage: StageType = StageType.NONE
     other_prefix: str = ""
-    save_work_dir: str = "outputs/2025-11-24_04-29-49_xgboost_0.0_to_0.5_0.1_step_none_none_multi_mcar_zero_mptms_30_10_3s" # ""
+    save_work_dir: str = "outputs/2025-11-25_06-41-44_fttransformer_0.0_to_0.5_0.1_step___multi_mcar_zero_mptms_30_10_3s"
     model_size: ModelSize = ModelSize.NONE
 
     # xgboost

@@ -9,6 +9,8 @@ class Embedder(nn.Module):
         self.encoder = nn.Linear(1, embed_dim)  # embedding
         self.decoder = nn.Linear(embed_dim, 1)  # scalar
 
+
+
     def encode(self, x: torch.Tensor, bemv: torch.Tensor):
         B, S, F = x.shape
 

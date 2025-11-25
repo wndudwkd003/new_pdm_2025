@@ -3,11 +3,23 @@ from src.params.data_model import ModelType, ModelSize, ModelParams
 from src.models.xgboost_adapter import XGBoostAdapter
 from src.models.lightgbm_adapter import LightGBMAdapter
 from src.models.rf_adapter import RandomForestAdapter
+
+
+from src.models.tab_transformer_adapter import TabTransformerAdapter
+from src.models.fttransformer_adapter import FTTransformerAdapter
+
+
+
+
 from src.models.MDBE_1_adapter import MDBE_1_Adapter
 from src.models.MDBE_1_balanced_adapter import MDBE_1_BALANCED_Adapter
 from src.models.MDBE_1_e2e_adapter import MDBE_1_E2E_Adapter
 
 from src.models.MDBE_2_adapter import MDBE_2_Adapter
+
+
+from src.models.MDBE_3_e2e_adapter import MDBE_3_E2E_Adapter
+
 
 
 
@@ -21,6 +33,9 @@ MODEL_MAP = {
 
     # Deep
 
+    ModelType.TABTRANSFORMER: TabTransformerAdapter,
+    ModelType.FTTRANSFORMER: FTTransformerAdapter,
+
 
     ############################
 
@@ -33,6 +48,10 @@ MODEL_MAP = {
 
 
     ModelType.MDBE_2: MDBE_2_Adapter,
+
+
+    ModelType.MDBE_3_E2E: MDBE_3_E2E_Adapter,
+
 
 
 

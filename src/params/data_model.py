@@ -1,6 +1,8 @@
 from enum import Enum
 from dataclasses import dataclass, field
 
+
+
 class DatasetType(Enum):
     MPTMS = "datasets/MPTMS/processed_data"
     CMAPSS = "datasets/c-mapss/processed_data"
@@ -10,6 +12,14 @@ class ModelType(Enum):
     LIGHTGBM = "lightgbm"
     RANDOMFOREST = "randomforest"
 
+
+    #
+
+    TABTRANSFORMER = "tabtransformer"
+    FTTRANSFORMER = "fttransformer"
+
+
+
     #
     MDBE_1 = "mdbe_1"
     MDBE_1_BALANCED = "mdbe_1_balanced"
@@ -18,6 +28,13 @@ class ModelType(Enum):
     MDBE_1_XGB = "mdbe_1_xgb"
 
     MDBE_2 = "mdbe_2"
+
+
+    MDBE_3_E2E = "mdbe_3_e2e"
+
+
+
+
 
 class StageType(Enum):
     NONE = ""

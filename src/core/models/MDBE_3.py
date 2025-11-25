@@ -43,7 +43,6 @@ class HybridDoubleBranchEncoder(nn.Module):
 
         mpie_out_dim = feature_hidden_dims[-1]
         self.latent_dim = mpie_out_dim * input_dim
-        self.hs_to_memory = nn.Linear(self.latent_dim, decoder_hidden_dim)
 
         self.sequence_encoders = nn.ModuleList([
             nn.TransformerEncoder(
@@ -61,112 +60,88 @@ class HybridDoubleBranchEncoder(nn.Module):
 
         self.latent_to_decoder = nn.Linear(self.latent_dim, decoder_hidden_dim)
 
-
-        # 트랜스포머 디코더
         self.class_embed = nn.Embedding(self.num_tokens, decoder_hidden_dim)
-        # 디코더용 위치 임베딩 (최대 horizon+1 길이까지)
-        self.pos_embed = nn.Embedding(horizon + 1, decoder_hidden_dim)
 
-        decoder_layer = nn.TransformerDecoderLayer(
-            d_model=decoder_hidden_dim,
-            nhead=nhead,
-            dim_feedforward=decoder_hidden_dim * 4,
-            dropout=0.1,
-            batch_first=True,  # (B, L, D)
+        self.decoder_gru = nn.GRU(
+            decoder_hidden_dim,
+            decoder_hidden_dim,
+            total_layer,
+            batch_first=True
         )
-        self.decoder = nn.TransformerDecoder(decoder_layer, num_layers=total_layer)
+
         self.decoder_out = nn.Linear(decoder_hidden_dim, num_class)
 
-    def _generate_square_subsequent_mask(
-        self,
-        sz: int,
-        device: torch.device,
-    ) -> torch.Tensor:
-        """
-        길이 sz에 대해, 미래 토큰을 보지 못하게 하는 causal mask 생성
-        - (sz, sz) 크기
-        - 상삼각(대각 위)이 -inf, 나머지는 0
-        """
-        mask = torch.full((sz, sz), float("-inf"), device=device)
-        mask = torch.triu(mask, diagonal=1)
-        return mask
+        self.init_bn = nn.BatchNorm1d(input_dim)
 
 
     def forward(
         self,
-        x:    torch.Tensor,  # (B, S, F_input) 정도라고 가정
-        bemv: torch.Tensor,
-    ) -> dict[str, torch.Tensor]:
+        x:      torch.Tensor,
+        bemv:   torch.Tensor,
+    ) ->        torch.Tensor:
 
-        # ===== 인코더 브랜치 =====
-        x_emb, bemv_emb = self.embedder(x, bemv)
+        # 초기 배치 정규화
+        B, S, F = x.shape
+        x_flat = x.view(B * S, F)
+        x_n_flat = self.init_bn(x_flat)
+        x_n = x_n_flat.view(B, S, F)
+
+        x_emb, bemv_emb = self.embedder(x_n, bemv)
         x_feat = self.mpie(x_emb, bemv_emb)
+        hs = []
 
-        hs_list = []
         for i in range(self.input_dim):
-            xf = x_feat[:, :, i, :]                # (B, S, D_enc)
-            h_i = self.sequence_encoders[i](xf)    # (B, S, D_enc)
-            hs_list.append(h_i)
+            xf = x_feat[:, :, i, :]
+            h_i = self.sequence_encoders[i](xf)
+            hs.append(h_i)
 
-        # hs: (B, S, F, D_enc)
-        hs = torch.stack(hs_list, dim=2)
+        hs = torch.stack(hs, dim=2)
 
-        # ===== 재구성 브랜치 =====
         recon = self.mpid(hs)
         recon = self.embedder.decode(recon)
 
-        B, S, F, D_enc = hs.shape
+        #
+        B = x.size(0)
+        latent = hs.mean(dim=1)
+        latent = latent.reshape(B, -1)
 
-        # ===== hs → latent / memory =====
-        # 1) 시간별 통합 임베딩: (B, S, F*D_enc)
-        hs_flat = hs.reshape(B, S, F * D_enc)
-
-        # 디코더의 encoder memory로 사용할 시계열: (B, S, D_dec)
-        memory = self.hs_to_memory(hs_flat)  # (B, S, decoder_hidden_dim)
-
-        # latent은 XGBoost 등 downstream 용도로 global context로 사용
-        # (시간축 평균) → (B, F*D_enc)
-        latent = hs_flat.mean(dim=1)         # (B, latent_dim)
+        h0 = self.latent_to_decoder(latent)
+        h_dec = h0.unsqueeze(0).repeat(
+            self.decoder_gru.num_layers, 1, 1
+        )
 
 
-        # ===== Transformer Decoder (autoregressive) =====
-        logits_list: list[torch.Tensor] = []
 
-        # 시작 토큰: <START>
-        y_seq = torch.full(
-            (B, 1),
+        logits_list = []
+        y_prev = torch.full(
+            (B,),
             self.start_idx,
             dtype=torch.long,
-            device=x.device,
-        )  # (B, 1)
+            device=x.device
+        )
+
 
         for t in range(self.horizon):
-            L = y_seq.size(1)  # 현재 디코더 입력 시퀀스 길이
+            dec_in = self.class_embed(y_prev).unsqueeze(1)
+            out, h_dec = self.decoder_gru(dec_in, h_dec)
+            logits = self.decoder_out(out.squeeze(1))
+            logits_list.append(logits)
+            y_prev = torch.argmax(logits, dim=-1)
 
-            positions = torch.arange(L, device=x.device).unsqueeze(0).expand(B, L)
-            tgt = self.class_embed(y_seq) + self.pos_embed(positions)  # (B, L, D_dec)
-
-            tgt_mask = self._generate_square_subsequent_mask(L, x.device)  # (L, L)
-
-            dec_out = self.decoder(
-                tgt=tgt,
-                memory=memory,
-                tgt_mask=tgt_mask,
-            )  # (B, L, D_dec)
-
-            step_logits = self.decoder_out(dec_out[:, -1, :])  # (B, num_class)
-            logits_list.append(step_logits)
-
-            next_token = torch.argmax(step_logits, dim=-1, keepdim=True)  # (B, 1)
-            y_seq = torch.cat([y_seq, next_token], dim=1)  # (B, L+1)
-
-        logits = torch.stack(logits_list, dim=1)  # (B, horizon, num_class)
+        logits = torch.stack(logits_list, dim=1)
 
         return {
-            "recon": recon,     # (B, S, F, ?) 형태 (embedder 내부 정의에 따라)
-            "logits": logits,   # (B, horizon, num_class)
-            "latent": latent,   # (B, latent_dim = F*D_enc)
+            "recon": recon,
+            "logits": logits,
+            "latent": latent,
         }
+
+
+
+
+
+
+
 
 
 

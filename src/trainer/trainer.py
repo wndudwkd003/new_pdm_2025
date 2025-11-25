@@ -34,15 +34,15 @@ class Trainer:
     def get_work_dir(self):
         # 현재 run의 ws 만드는 함수임
         now = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-        mn = self.model_type.name.lower() # model name
+        mn = self.model_type.value.lower() # model name
 
         sr = self.config.data.start_missing_ratio       # start ratio
         tr = self.config.data.target_missing_ratio      # target ratio
         step = self.config.data.step_missing_ratio      # step ratio
 
-        stage = self.stage_type.name.lower()
+        stage = self.stage_type.value.lower()
 
-        model_size = self.config.model.model_size.name.lower()
+        model_size = self.config.model.model_size.value.lower()
 
         other_prefix = self.config.model.other_prefix
         other_prefix = f"-{other_prefix}" if other_prefix != "" else ""
