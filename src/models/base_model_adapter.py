@@ -1,5 +1,6 @@
 # src/models/base_model_adapter.py
 
+from regex import F
 import torch
 
 from pathlib import Path
@@ -7,6 +8,7 @@ import json
 
 from abc import ABC, abstractmethod
 
+from src.params.data_model import Split
 from src.configs.configs import Config
 
 class BaseModelAdapter(ABC):
@@ -102,3 +104,10 @@ class BaseModelAdapter(ABC):
         return optimizer, scheduler
 
 
+
+    def get_desc(
+        self,
+        model_name: str,
+        split: Split,
+    ):
+        return F"[{model_name} {split.name}]"

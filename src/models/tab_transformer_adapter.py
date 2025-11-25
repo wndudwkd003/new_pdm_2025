@@ -17,6 +17,15 @@ from tab_transformer_pytorch import TabTransformer
 
 
 class TabTransformerAdapter(BaseModelAdapter):
+    """
+    TabTransformer 기반 멀티-스텝 분류 어댑터.
+
+    - 입력 x: (B, S, F) 혹은 (B, ...) 모양의 연속형 feature 텐서
+      → batch 차원만 남기고 나머지는 전부 flatten 해서 하나의 tabular feature로 사용
+    - 출력 logits: (B, H, C)
+      → TabTransformer의 dim_out = H * C 로 설정 후 reshape
+    """
+
     def __init__(
         self,
         config: Config,
@@ -24,16 +33,18 @@ class TabTransformerAdapter(BaseModelAdapter):
         super().__init__(config)
 
         self.model: TabTransformer | None = None
-        self.models: list[TabTransformer] | None = None
 
         self.device = self.config.train.device
         self.train_mode = self.config.model.stage
 
         self.feature_dim: int | None = None   # F (센서 수)
         self.seq_len: int | None = None       # S (윈도우 길이)
-        self.input_dim: int | None = None     # S * F (TabTransformer 입력 차원)
+        self.input_dim: int | None = None     # S * F (TabTransformer 연속형 입력 차원)
         self.num_class: int | None = None
         self.horizon: int | None = None
+
+        self.optimizer: torch.optim.Optimizer | None = None
+        self.scheduler = None
 
     # ------------------------------------------------------------------
     # 학습
@@ -44,122 +55,103 @@ class TabTransformerAdapter(BaseModelAdapter):
         valid_data: Datasets,
     ):
         """
-        각 horizon step마다 TabTransformer 하나씩 학습.
-        입력은 항상 (B, S, F) 라고 가정하고, (B, S*F) 로 flatten 해서 사용.
+        단일 TabTransformer로 horizon 전체(H-step)를 한 번에 예측.
+        dim_out = H * C 로 설정하여, 출력 (B, H*C)을 (B, H, C)로 reshape.
         """
-        # 1) shape 파악 (항상 B, S, F 라고 가정)
-        probe_loader = train_data.get_loader_for_deep(shuffle=False)
-        first_batch = next(iter(probe_loader))
-
-        x_probe = first_batch["x"]  # (B, S, F)
-        _, S, F_feat = x_probe.shape
-        self.seq_len = int(S)
-        self.feature_dim = int(F_feat)
-        self.input_dim = int(S * F_feat)
-
-        print(
-            f"[TabTransformerAdapter] seq_len={self.seq_len}, "
-            f"feature_dim={self.feature_dim}, input_dim={self.input_dim}"
-        )
-
-        # 2) 실제 학습용 loader
         tr_loader = train_data.get_loader_for_deep(shuffle=True)
         vl_loader = valid_data.get_loader_for_deep(shuffle=False)
 
+        # horizon, num_class 설정
         self.num_class = int(train_data.meta.num_class)
         self.horizon = int(train_data.get_horizon())
 
-        H = self.horizon
-        C = self.num_class
+        best_valid_loss = None
+        best_state = None
+        patience = 0
+        max_patience = self.config.train.early_stopping_rounds
 
-        print(f"[TabTransformerAdapter] num_class={C}, horizon={H}")
+        lrs: list[float] = []
+        train_losses: list[float] = []
+        valid_losses: list[float] = []
 
-        # 3) horizon 개수만큼 TabTransformer 모델 생성 및 학습
-        self.models = []
-        loss_tasks: list[dict] = []
+        num_epochs = self.config.train.epochs
 
-        for t in range(H):
-            print(f"[TabTransformerAdapter] === Train step {t} / {H-1} ===")
-
-            model_t = self._get_model(self.input_dim, C)
-            model_t.to(self.device)
-
-            self.models.append(model_t)
-            self.model = model_t  # BaseModelAdapter.get_deeplearning_utils에서 사용
-
-            optimizer, scheduler = self.get_deeplearning_utils()
-
-            best_valid_loss = None
-            best_state = None
-            patience = 0
-            max_patience = self.config.train.early_stopping_rounds
-
-            train_losses_t: list[float] = []
-            valid_losses_t: list[float] = []
-
-            for epoch in range(self.config.train.epochs):
-                train_loss = self.run_epoch(
-                    loader=tr_loader,
-                    optimizer=optimizer,
-                    split=Split.TRAIN,
-                    step_idx=t,
-                )
-                valid_loss = self.run_epoch(
-                    loader=vl_loader,
-                    optimizer=None,
-                    split=Split.VALID,
-                    step_idx=t,
-                )
-
-                lr = float(optimizer.param_groups[0]["lr"])
-
-                print(
-                    f"[{self.config.model.model.name} step {t} Epoch {epoch+1}] "
-                    f"Train Loss: {train_loss:.4f} | Valid Loss: {valid_loss:.4f} | LR: {lr:.6f}"
-                )
-
-                train_losses_t.append(train_loss)
-                valid_losses_t.append(valid_loss)
-
-                scheduler.step()
-
-                if best_valid_loss is None or valid_loss < best_valid_loss:
-                    best_valid_loss = valid_loss
-                    patience = 0
-                    best_state = {k: v.cpu() for k, v in model_t.state_dict().items()}
-                else:
-                    patience += 1
-
-                if patience >= max_patience:
-                    print(
-                        f"[{self.config.model.model.name} step {t}] "
-                        f"Early stopping at epoch {epoch+1}"
-                    )
-                    break
-
-            if best_state is not None:
-                model_t.load_state_dict(best_state)
-                model_t.to(self.device)
-
-            loss_tasks.append(
-                {
-                    Split.TRAIN.value: train_losses_t,
-                    Split.VALID.value: valid_losses_t,
-                }
+        for epoch in range(num_epochs):
+            train_loss = self.run_epoch(
+                loader=tr_loader,
+                split=Split.TRAIN,
+            )
+            valid_loss = self.run_epoch(
+                loader=vl_loader,
+                split=Split.VALID,
             )
 
-        # 4) 전체 horizon 모델로 train/valid 메트릭 계산
+            if self.optimizer is None:
+                lr = float(self.config.train.learning_rate)
+            else:
+                lr = float(self.optimizer.param_groups[0]["lr"])
+
+            print(
+                f"[{self.config.model.model.name} Epoch {epoch + 1}] "
+                f"Train Loss: {train_loss:.4f} | "
+                f"Valid Loss: {valid_loss:.4f} | "
+                f"LR: {lr:.6f}"
+            )
+
+            lrs.append(lr)
+            train_losses.append(train_loss)
+            valid_losses.append(valid_loss)
+
+            if self.scheduler is not None:
+                self.scheduler.step()
+
+            # early stopping
+            if best_valid_loss is None or valid_loss < best_valid_loss:
+                best_valid_loss = valid_loss
+                patience = 0
+                if self.model is not None:
+                    best_state = {
+                        k: v.cpu()
+                        for k, v in self.model.state_dict().items()
+                    }
+            else:
+                patience += 1
+
+            if patience >= max_patience:
+                print(f"[{self.config.model.model.name}] Early stopping at epoch {epoch + 1}")
+                break
+
+        # best state 로드
+        if best_state is not None and self.model is not None:
+            self.model.load_state_dict(best_state)
+            self.model.to(self.device)
+
+        # 최종 성능 계산 (train / valid)
         _, tr_preds, tr_labels, _, _ = self.predict(tr_loader)
         _, vl_preds, vl_labels, _, _ = self.predict(vl_loader)
 
-        train_metrics = compute_multitask_classification_metrics(tr_labels, tr_preds)
-        valid_metrics = compute_multitask_classification_metrics(vl_labels, vl_preds)
+        train_metrics = compute_multitask_classification_metrics(
+            tr_labels, tr_preds
+        )
+        valid_metrics = compute_multitask_classification_metrics(
+            vl_labels, vl_preds
+        )
 
-        metric_name = "cross_entropy_loss"
+        metric_name = "cross_entropy"
+
+        H = self.horizon
+        tasks = []
+        for _ in range(H):
+            tasks.append(
+                {
+                    Split.TRAIN.value: train_losses,
+                    Split.VALID.value: valid_losses,
+                }
+            )
 
         loss_info = {
             "metric_name": metric_name,
-            "tasks": loss_tasks,
+            "tasks": tasks,
         }
 
         results = {
@@ -172,57 +164,68 @@ class TabTransformerAdapter(BaseModelAdapter):
         return results
 
     # ------------------------------------------------------------------
-    # 단일 step (timestep)용 epoch 러너
+    # 단일 epoch 학습 / 검증
     # ------------------------------------------------------------------
     def run_epoch(
         self,
         loader: DataLoader,
-        optimizer: torch.optim.Optimizer | None,
         split: Split,
-        step_idx: int,
-    ) -> float:
-        assert self.models is not None
-        assert self.input_dim is not None
+    ):
+        is_train = (split == Split.TRAIN)
 
-        model = self.models[step_idx]
+        if is_train:
+            self.model_train_mode()
+        else:
+            self.model_eval_mode()
 
-        is_train = split == Split.TRAIN
-        model.train() if is_train else model.eval()
-
-        desc = f"[{self.config.model.model.name} {split.name} step {step_idx}]"
+        desc = f"[{self.config.model.model.name} {split.name}]"
 
         total_loss = 0.0
         num_batches = 0
 
         for batch in tqdm(loader, desc=desc):
-            x, y, _, bemv, _, _ = self._prepare_batch(batch)
+            x, y, _, _, _, _ = self._prepare_batch(batch)
 
-            # x: (B, S, F) 고정
-            B, S, F_feat = x.shape
-            x_in = x.reshape(B, S * F_feat)
+            # 첫 배치에서 모델이 없으면 여기서 생성 (입력 차원 추론)
+            if self.model is None:
+                self._build_model_from_batch(x)
 
+            # x: (B, S, F) → (B, S*F)
+            B = x.size(0)
+            x_flat = x.view(B, -1)
 
-            # TabTransformer는 (x_categ, x_cont) 입력
+            # TabTransformer 입력: (x_categ, x_cont)
             x_categ = torch.empty(B, 0, dtype=torch.long, device=self.device)
-            x_cont = x_in
+            x_cont = x_flat
 
-            y_step = y[:, step_idx]
+            if is_train and self.optimizer is None:
+                self.optimizer, self.scheduler = self.get_deeplearning_utils()
+
+            if is_train and self.optimizer is None:
+                raise ValueError("optimizer가 설정되지 않았습니다.")
 
             if is_train:
-                optimizer.zero_grad()
+                self.optimizer.zero_grad()
 
-            with torch.set_grad_enabled(is_train):
-                logits = model(x_categ, x_cont)  # (B, num_class)
-                loss = F.cross_entropy(logits, y_step)
+            logits = self.model(x_categ, x_cont)  # (B, H * C)
+
+            H = self.horizon
+            C = self.num_class
+            logits = logits.view(B, H, C)         # (B, H, C)
+
+            logits_flat = logits.view(B * H, C)   # (B*H, C)
+            y_flat = y.view(B * H)                # (B*H,)
+
+            loss = F.cross_entropy(logits_flat, y_flat)
 
             if is_train:
                 loss.backward()
-                optimizer.step()
+                self.optimizer.step()
 
             total_loss += float(loss.item())
             num_batches += 1
 
-        return total_loss / num_batches
+        return total_loss / max(1, num_batches)
 
     # ------------------------------------------------------------------
     # 테스트
@@ -231,7 +234,7 @@ class TabTransformerAdapter(BaseModelAdapter):
         self,
         test_data: Datasets,
     ):
-        if self.models is None:
+        if self.model is None:
             raise ValueError("모델이 학습되거나 로드되지 않았습니다.")
 
         te_loader = test_data.get_loader_for_deep(shuffle=False)
@@ -240,10 +243,12 @@ class TabTransformerAdapter(BaseModelAdapter):
             te_loader
         )
 
+        # overall metric
         metrics_overall = compute_multitask_classification_metrics(
             labels_all, preds_all
         )
 
+        # pattern/ratio 별 metric
         patterns = test_data.config.data.missing_patterns
         ratios = test_data.ratios
 
@@ -280,12 +285,10 @@ class TabTransformerAdapter(BaseModelAdapter):
         self,
         loader: DataLoader,
     ):
-        if self.models is None:
+        if self.model is None:
             raise ValueError("모델이 로드되지 않았습니다.")
-        assert self.input_dim is not None
 
-        for m in self.models:
-            m.eval()
+        self.model.eval()
 
         total_loss = 0.0
         num_batches = 0
@@ -295,45 +298,30 @@ class TabTransformerAdapter(BaseModelAdapter):
         all_pattern_idx = []
         all_ratio_idx = []
 
-        H = len(self.models)
+        desc = f"[{self.config.model.model.name} PRED]"
 
-        for batch in tqdm(loader, desc=f"[{self.config.model.model.name} PRED]"):
-            x, y, _, bemv, pattern_idx, ratio_idx = self._prepare_batch(batch)
+        for batch in tqdm(loader, desc=desc):
+            x, y, _, _, pattern_idx, ratio_idx = self._prepare_batch(batch)
 
-            # x: (B, S, F) 고정
-            B, S, F_feat = x.shape
-            x_in = x.reshape(B, S * F_feat)
-
-            if x_in.shape[1] != self.input_dim:
-                raise ValueError(
-                    f"입력 차원 불일치: x_in.shape[1]={x_in.shape[1]}, "
-                    f"self.input_dim={self.input_dim}"
-                )
+            B = x.size(0)
+            x_flat = x.view(B, -1)
 
             x_categ = torch.empty(B, 0, dtype=torch.long, device=self.device)
-            x_cont = x_in
+            x_cont = x_flat
 
-            logits_list = []
-            preds_list = []
+            with torch.no_grad():
+                logits = self.model(x_categ, x_cont)  # (B, H * C)
 
-            for t, model in enumerate(self.models):
-                logits_t = model(x_categ, x_cont)  # (B, C)
-                preds_t = logits_t.argmax(dim=-1)  # (B,)
+                H = self.horizon
+                C = self.num_class
 
-                logits_list.append(logits_t)
-                preds_list.append(preds_t)
+                logits = logits.view(B, H, C)        # (B, H, C)
+                logits_flat = logits.view(B * H, C)  # (B*H, C)
+                y_flat = y.view(B * H)               # (B*H,)
 
-            logits = torch.stack(logits_list, dim=1)  # (B, H, C)
-            preds = torch.stack(preds_list, dim=1)    # (B, H)
+                loss = F.cross_entropy(logits_flat, y_flat)
 
-            B_cur, H_cur, C = logits.shape
-            if H_cur != H:
-                raise ValueError(f"H mismatch: H_cur={H_cur}, H={H}")
-
-            logits_flat = logits.reshape(B_cur * H_cur, C)
-            y_flat = y.reshape(B_cur * H_cur)
-
-            loss = F.cross_entropy(logits_flat, y_flat)
+                preds = logits.argmax(dim=-1)        # (B, H)
 
             total_loss += float(loss.item())
             num_batches += 1
@@ -345,10 +333,10 @@ class TabTransformerAdapter(BaseModelAdapter):
 
         avg_loss = total_loss / max(1, num_batches)
 
-        preds_all = torch.cat(all_preds, dim=0).numpy()
-        labels_all = torch.cat(all_labels, dim=0).numpy()
-        pattern_idx_all = torch.cat(all_pattern_idx, dim=0).numpy()
-        ratio_idx_all = torch.cat(all_ratio_idx, dim=0).numpy()
+        preds_all = torch.cat(all_preds, dim=0).numpy()          # (N, H)
+        labels_all = torch.cat(all_labels, dim=0).numpy()        # (N, H)
+        pattern_idx_all = torch.cat(all_pattern_idx, dim=0).numpy()  # (N,)
+        ratio_idx_all = torch.cat(all_ratio_idx, dim=0).numpy()      # (N,)
 
         return avg_loss, preds_all, labels_all, pattern_idx_all, ratio_idx_all
 
@@ -361,28 +349,66 @@ class TabTransformerAdapter(BaseModelAdapter):
     ):
         x = batch["x"].to(self.device)                # (B, S, F)
         y = batch["y"].to(self.device)                # (B, H)
-        x_ori = batch["x_originals"].to(self.device)  # 안 써도 일단 유지
-        bemv = batch["bemv"].to(self.device)          # 안 써도 일단 유지
+        x_ori = batch["x_originals"].to(self.device)  # 사용하지 않지만 유지
+        bemv = batch["bemv"].to(self.device)          # 사용하지 않지만 유지
         pattern_idx = batch["pattern_idx"]
         ratio_idx = batch["ratio_idx"]
 
         return x, y, x_ori, bemv, pattern_idx, ratio_idx
 
     # ------------------------------------------------------------------
-    # TabTransformer 생성
+    # TabTransformer 생성 (첫 배치에서 입력 차원 추론)
     # ------------------------------------------------------------------
+    def _build_model_from_batch(
+        self,
+        x: torch.Tensor,
+    ):
+        """
+        첫 배치의 x 모양을 보고 TabTransformer를 구성.
+        x: (B, S, F) 또는 (B, ...) 로 가정.
+        """
+        B = x.size(0)
+        x_flat = x.view(B, -1)  # (B, S*F 또는 기타)
+        input_dim = x_flat.size(1)
+
+        self.input_dim = int(input_dim)
+
+        # S, F를 명시적으로 알고 싶다면, 3D인 경우에만 설정
+        if x.dim() == 3:
+            _, S, F_feat = x.shape
+            self.seq_len = int(S)
+            self.feature_dim = int(F_feat)
+        else:
+            self.seq_len = None
+            self.feature_dim = None
+
+        if self.horizon is None or self.num_class is None:
+            raise ValueError("horizon 또는 num_class가 설정되지 않았습니다.")
+
+        # 멀티-스텝: dim_out = H * C
+        dim_out = int(self.horizon * self.num_class)
+
+        self.model = self._get_model(
+            input_dim=self.input_dim,
+            dim_out=dim_out,
+        ).to(self.device)
+
     def _get_model(
         self,
         input_dim: int,
-        num_class: int,
-    ):
+        dim_out: int,
+    ) -> TabTransformer:
+        """
+        num_continuous = input_dim (= S*F)
+        dim_out = H * C
+        """
         model = TabTransformer(
             categories=(),                # 카테고리 없음
             num_continuous=input_dim,     # flatten된 연속형 feature 수 (S*F)
-            dim=32, # 32 # 16
-            dim_out=num_class,            # 클래스 수
-            depth=6,  # 6 # 4
-            heads=8,  # 8 # 4
+            dim=32,
+            dim_out=dim_out,
+            depth=6,
+            heads=8,
             attn_dropout=0.1,
             ff_dropout=0.1,
             mlp_hidden_mults=(4, 2),
@@ -391,24 +417,31 @@ class TabTransformerAdapter(BaseModelAdapter):
         return model
 
     # ------------------------------------------------------------------
+    # 모드 전환
+    # ------------------------------------------------------------------
+    def model_train_mode(self):
+        if self.model is not None:
+            self.model.train()
+
+    def model_eval_mode(self):
+        if self.model is not None:
+            self.model.eval()
+
+    # ------------------------------------------------------------------
     # 저장 / 로드
     # ------------------------------------------------------------------
     def save(
         self,
         path: Path,
     ):
-        if self.models is None:
+        if self.model is None:
             raise ValueError("저장할 모델이 없습니다. fit() 이후에 save()를 호출하십시오.")
 
         save_dir = path / "save"
         save_dir.mkdir(parents=True, exist_ok=True)
 
-        model_paths: list[str] = []
-
-        for t, model in enumerate(self.models):
-            model_path = save_dir / f"{self.config.model.model.name}_step_{t}.pt"
-            torch.save(model.state_dict(), model_path)
-            model_paths.append(str(model_path))
+        model_path = save_dir / f"{self.config.model.model.name}_model.pt"
+        torch.save(self.model.state_dict(), model_path)
 
         meta = {
             "feature_dim": self.feature_dim,
@@ -416,12 +449,12 @@ class TabTransformerAdapter(BaseModelAdapter):
             "input_dim": self.input_dim,
             "num_class": self.num_class,
             "horizon": self.horizon,
-            "model_paths": model_paths,
+            "model_path": str(model_path),
         }
 
         self.save_meta(save_dir, meta)
 
-        return save_dir
+        return model_path
 
     def load(
         self,
@@ -430,26 +463,24 @@ class TabTransformerAdapter(BaseModelAdapter):
         save_dir = path / Split.TRAIN.value / "save"
         meta = self.load_meta(save_dir)
 
-        self.feature_dim = int(meta["feature_dim"])
-        self.seq_len = int(meta["seq_len"])
+        self.feature_dim = int(meta["feature_dim"]) if meta["feature_dim"] is not None else None
+        self.seq_len = int(meta["seq_len"]) if meta["seq_len"] is not None else None
         self.input_dim = int(meta["input_dim"])
         self.num_class = int(meta["num_class"])
         self.horizon = int(meta["horizon"])
-        model_paths: list[str] = list(meta["model_paths"])
 
-        self.device = self.config.train.device
+        model_path = Path(meta["model_path"])
 
-        self.models = []
+        dim_out = int(self.horizon * self.num_class)
 
-        for model_path_str in model_paths:
-            model_path = Path(model_path_str)
-            model = self._get_model(self.input_dim, self.num_class)
-            state = torch.load(model_path, map_location=self.device)
-            model.load_state_dict(state)
-            model.to(self.device)
-            model.eval()
-            self.models.append(model)
+        self.model = self._get_model(
+            input_dim=self.input_dim,
+            dim_out=dim_out,
+        ).to(self.device)
 
-        self.model = self.models[0] if len(self.models) > 0 else None
+        state = torch.load(model_path, map_location=self.device)
+        self.model.load_state_dict(state)
+        self.model.to(self.device)
+        self.model.eval()
 
-        return len(self.models) == self.horizon
+        return True

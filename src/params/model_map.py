@@ -8,6 +8,7 @@ from src.models.rf_adapter import RandomForestAdapter
 from src.models.tab_transformer_adapter import TabTransformerAdapter
 from src.models.fttransformer_adapter import FTTransformerAdapter
 
+from src.models.patchtst_adapter import PatchTSTAdapter
 
 
 
@@ -35,6 +36,7 @@ MODEL_MAP = {
 
     ModelType.TABTRANSFORMER: TabTransformerAdapter,
     ModelType.FTTRANSFORMER: FTTransformerAdapter,
+    ModelType.PATCHTST: PatchTSTAdapter,
 
 
     ############################

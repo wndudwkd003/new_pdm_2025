@@ -42,7 +42,7 @@ class MDBE_3_E2E_Adapter(BaseModelAdapter):
         self.horizon = train_data.get_horizon()
 
         self.model = self._get_model(self.feature_dim, self.num_class)
-        self.model.to(self.device)
+
 
         optimizer, scheduler = self.get_deeplearning_utils()
 

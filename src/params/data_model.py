@@ -18,6 +18,8 @@ class ModelType(Enum):
     TABTRANSFORMER = "tabtransformer"
     FTTRANSFORMER = "fttransformer"
 
+    PATCHTST = "patchtst"
+
 
 
     #
