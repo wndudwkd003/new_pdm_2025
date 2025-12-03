@@ -5,7 +5,7 @@ from datetime import datetime
 from dataclasses import asdict
 import json, shutil
 from src.models.base_model_adapter import BaseModelAdapter
-from src.configs.configs import Config, StaticMeta
+from src.configs.configs import Config
 from src.params.literals import Workspace
 from src.params.data_model import Split, StageType
 from src.params.model_map import MODEL_MAP
@@ -15,6 +15,7 @@ from src.utils.eval_viz import (
     save_history_artifacts,
     plot_metric_over_ratio,
 )
+from src.utils.zscore_utils import zscore_save, load_zscore_data
 
 class Trainer:
     def __init__(
@@ -22,8 +23,6 @@ class Trainer:
         config: Config,
     ):
         self.config = config
-
-        self.static_meta = StaticMeta()
 
         self.model_type = config.model.model
         self.stage_type = config.model.stage
@@ -51,12 +50,8 @@ class Trainer:
         missing_patterns = "_".join([p.value for p in self.config.data.missing_patterns])
         impute_method = self.config.data.impute_method.value
 
-
-        sm = self.static_meta
-
-        static_meta = f"{self.config.data.datasets.name.lower()}_{sm.forward}_{sm.backward}_{sm.interval}s"
-
-        run_name = f"{now}_{mn}_{sr}_to_{tr}_{step}_step_{stage}_{model_size}_{missing_scenario}_{missing_patterns}_{impute_method}_{static_meta}{other_prefix}"
+        seed_txt = f"seed{self.config.train.seed}"
+        run_name = f"{now}_{mn}_{seed_txt}_{sr}_to_{tr}_{step}_step_{stage}{model_size}{missing_scenario}_{missing_patterns}_{impute_method}{other_prefix}"
 
         # ws dir 생성
         work_dir = Path(self.config.train.output_dir) / run_name
@@ -80,10 +75,16 @@ class Trainer:
             self.work_dir = self.get_work_dir()
 
             train_ds = Datasets(self.config, Split.TRAIN)
-            valid_ds = Datasets(self.config, Split.VALID)
+            train_zscore_meta = train_ds.zscore_meta
+
+
+            valid_ds = Datasets(self.config, Split.VALID, train_zscore_meta)
 
             model_save_dir = self.work_dir / split.value
             model_save_dir.mkdir(parents=True, exist_ok=True)
+
+
+            zscore_save(model_save_dir, train_zscore_meta)
 
             if self.config.model.stage == StageType.FINETUNE:
                 pre_trained_dir = Path(self.config.model.save_work_dir)
@@ -103,7 +104,8 @@ class Trainer:
             self.work_dir = Path(self.config.model.save_work_dir)
             results_dir = self.get_next_result_dir("test")
 
-            test_ds = Datasets(self.config, Split.TEST)
+            train_zscore_meta = load_zscore_data(self.work_dir / Split.TRAIN.value)
+            test_ds = Datasets(self.config, Split.TEST, train_zscore_meta)
 
             if not self.adapter.load(self.work_dir):
                 raise ValueError("모델 로드에 실패했습니다.")
@@ -195,7 +197,7 @@ class Trainer:
                 )
                 # f1_macro가 있는 경우에만
                 sample_metrics = next(iter(ratio_dict.values()))
-                if "f1_macro" in sample_metrics["overall"]:
+                if "f1_macro" in sample_metrics:
                     plot_metric_over_ratio(
                         metrics_by_ratio=ratio_dict,
                         metric_key="f1_macro",

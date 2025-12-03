@@ -14,15 +14,6 @@ from src.params.scenario import MissingScenario, MissingPattern, ImputeMethod # 
 
 
 @dataclass
-class StaticMeta:
-    backward: int = 10
-    forward: int = 30
-    interval: int = 3
-
-
-
-
-@dataclass
 class Data:
     datasets: DatasetType = DatasetType.MPTMS
     skip_header: bool = True
@@ -30,20 +21,21 @@ class Data:
     num_workers: int = 10
     missing_patterns: list[MissingPattern] = field(default_factory=lambda: [MissingPattern.MCAR])
     missing_scenario: MissingScenario = MissingScenario.MULTI # SINGLE, MULTI
-    target_missing_ratio: float = 0.5
+    target_missing_ratio: float = 0.5 # 0.5
     start_missing_ratio: float  = 0.0
-    step_missing_ratio: float   = 0.1
+    step_missing_ratio: float   = 0.1 # 0.1
     impute_method: ImputeMethod = ImputeMethod.ZERO
+    use_on_batch: bool = True
     # stack_mode: StackMode
 
 @dataclass
 class Train:
     epochs: int = 1000
-    batch_size: int = 128
+    batch_size: int = 16 # 8
     lr: float = 1e-3
     device: str = "cuda"
     output_dir: str = "outputs"
-    seed: int = 42
+    seed: int = 6652
     early_stopping_rounds: int = 15
     lr_min: float = 1e-5
     tree_method: str = "hist"
@@ -51,10 +43,10 @@ class Train:
 
 @dataclass
 class Model:
-    model: ModelType = ModelType.FTTRANSFORMER
+    model: ModelType = ModelType.XGBOOST
     stage: StageType = StageType.NONE
     other_prefix: str = ""
-    save_work_dir: str = ""
+    save_work_dir: str = "outputs/2025-12-03_09-35-22_xgboost_seed6652_0.0_to_0.5_0.1_step_multi_mcar_zero"
     model_size: ModelSize = ModelSize.NONE
 
     # xgboost
@@ -79,8 +71,6 @@ class Config:
 
 @dataclass
 class DatasetMeta:
-    horizon: int = 0
-    sequence: int = 0
     continuous_cols: list[str] = field(default_factory=list)
     categorical_cols: list[str] = field(default_factory=list)
     feature_dim: int = 0

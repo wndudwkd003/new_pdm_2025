@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 class DatasetType(Enum):
     MPTMS = "datasets/MPTMS/processed_data"
     CMAPSS = "datasets/c-mapss/processed_data"
+    FORD = "datasets/fordengine/processed_data"
 
 class ModelType(Enum):
     XGBOOST = "xgboost"

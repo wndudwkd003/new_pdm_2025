@@ -31,10 +31,5 @@ class MPIEModel(nn.Module):
         # B, S, F, D
 
 
-
-
-
-
-
         h = self.mlp(x)
         return h

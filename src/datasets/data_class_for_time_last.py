@@ -8,7 +8,7 @@ import numpy as np
 from pathlib import Path
 import json
 from tqdm.auto import tqdm
-import pandas as pd
+
 from src.imputer.base_imputer import BaseImputeAdapter
 from src.configs.configs import Config, DatasetMeta
 
@@ -25,7 +25,6 @@ from src.params.scenario import (
     MissingPattern, ImputeMethod
 )
 
-from src.datasets.zscore_meta import ZScoreMeta
 
 
 
@@ -40,6 +39,10 @@ IMPUTER_MAP = {
 }
 
 def _apply_missing_single_ratio(args):
+    """
+    한 개의 (pattern, ratio)에 대해 X 전체에 결측 패턴을 적용하는 함수.
+    ProcessPoolExecutor 에서 사용.
+    """
     ratio, X, seed, pattern = args   # pattern: MissingPattern Enum
 
     Adapter = MISSING_MAP[pattern]
@@ -48,7 +51,7 @@ def _apply_missing_single_ratio(args):
         seed=seed,
     )
 
-    X_missing = adapter.transform(X)
+    X_missing = adapter.transform(X)   # (B, S, F)
     return ratio, X_missing
 
 
@@ -90,7 +93,6 @@ class Datasets(Dataset):
         self,
         config: Config,
         split: Split,
-        zscore_meta: ZScoreMeta | None = None,
     ):
         super().__init__()
 
@@ -100,26 +102,21 @@ class Datasets(Dataset):
         use_dataset = config.data.datasets
         self.data_name = use_dataset.name
         self.data_dir = use_dataset.value
-        self.zscore_meta = zscore_meta
 
 
-        # CSV 데이터 로드
-        X_raw, y_raw, meta = self.load_data()
+        # jsonl 파일 로드
+        samples, meta = self.load_data()
         self.meta = meta
+
+        # 실제 데이터 로드
+        X_raw, y_raw = self.numpy_from_samples(samples)
         self.per_data_size = X_raw.shape[0]
 
         # 결측 시나리오 적용
         self.missing_dict = self.apply_missing_scenario(X_raw, y_raw)
 
-        # Imputation 적용
+        # imputation 적용
         self.imputed_dict = self.apply_imputation(self.missing_dict)
-
-        # Z-score 계산
-        if split == Split.TRAIN:
-            self.zscore_meta = self.make_zscore_data()
-
-        # Z-score 적용
-        self.imputed_dict = self.apply_zscore(self.zscore_meta)
 
 
 
@@ -207,6 +204,12 @@ class Datasets(Dataset):
         return {"base_idx": idx}
 
     # ----------------- 내부 메서드 -----------------
+
+    def get_flat_2d(self, X: np.ndarray):
+        B, S, F = X.shape
+        X_2d = X.reshape(B, S * F)
+        return X_2d
+
 
     def apply_missing_scenario(
         self,
@@ -340,7 +343,10 @@ class Datasets(Dataset):
         return imputed_dict
 
 
-    def get_data_for_gbdt(self):
+    def get_data_for_gbdt(
+        self,
+    ):
+
         X_list: list[np.ndarray] = []
         y_list: list[np.ndarray] = []
 
@@ -352,14 +358,17 @@ class Datasets(Dataset):
             for ratio in self.ratios:
                 d = ratio_dict[ratio]
 
-                X_imp = d["X"]   # (N, F)
-                y = d["y"]       # (N,)
+                X_imp = d["X"]
+                y = d["y"]
 
                 X_list.append(X_imp)
                 y_list.append(y)
 
-        X_cat = np.concatenate(X_list, axis=0)   # (M, F)
-        y_cat = np.concatenate(y_list, axis=0)   # (M,)
+        X_cat = np.concatenate(X_list, axis=0)
+        y_cat = np.concatenate(y_list, axis=0)
+
+        B, S, F = X_cat.shape
+        X_cat = X_cat.reshape(B, S * F)
 
         return X_cat, y_cat
 
@@ -400,9 +409,9 @@ class Datasets(Dataset):
             for r_idx, ratio in enumerate(tqdm(ratios, desc=f"Building DL view ({pattern.name})", leave=False)):
                 d = ratio_dict[ratio]
 
-                X_imp = d["X"]
-                y = d["y"]
-                bemv = d["bemv"]
+                X_imp = d["X"]      # (B, S, F)
+                y = d["y"]          # (B, T)
+                bemv = d["bemv"]    # (B, S, F)
 
                 B = X_imp.shape[0]
 
@@ -410,8 +419,12 @@ class Datasets(Dataset):
                 y_list.append(y)
                 bemv_list.append(bemv)
 
-                pattern_idx_list.append(np.full((B,), p_idx, dtype=np.int64))
-                ratio_idx_list.append(np.full((B,), r_idx, dtype=np.int64))
+                pattern_idx_list.append(
+                    np.full((B,), p_idx, dtype=np.int64)
+                )
+                ratio_idx_list.append(
+                    np.full((B,), r_idx, dtype=np.int64)
+                )
 
         X_all = np.concatenate(X_list, axis=0)
         y_all = np.concatenate(y_list, axis=0)
@@ -427,93 +440,49 @@ class Datasets(Dataset):
 
         self.N = self.inputs.shape[0]
 
+
+
+
+    def get_horizon(self):
+        return self.meta.horizon
+
     def get_num_class(self):
         return self.meta.num_class
 
 
-    def load_data(self):
-        base_dir = Path(self.data_dir)
-        split_dir = base_dir / self.split.value
+    def load_data(
+        self,
+    ):
+        data_path = Path(self.data_dir) / self.split.value
+        jsonl_files = list(data_path.glob("*.jsonl"))
 
-        # meta read
-        meta_path = base_dir / "meta.json"
-        with open(meta_path, "r", encoding="utf-8") as f:
-            meta_json = json.load(f)
+        samples: list[dict] = []
 
-        conti_cols = meta_json["continuous_cols"]
-        cate_cols = meta_json["categorical_cols"]
-        num_class = meta_json["num_class"]
-        feature_dim = meta_json["feature_dim"]
+        for fpath in jsonl_files:
+            with open(fpath, "r", encoding="utf-8") as f:
+                objs = [json.loads(line.strip()) for line in f]
+                samples.extend(objs)
 
-        # csv path
-        X_path = split_dir / "X.csv"
-        y_path = split_dir / "y.csv"
+        # meta 파일은 다 동일해서 0번 샘플에서 가져옴
+        _meta = samples[0]["metadata"]
 
-        # load
-        X_df = pd.read_csv(X_path)
-        X = X_df[conti_cols + cate_cols].astype(np.float32).values
+        continuous_cols = _meta["continuous_cols"]
+        categorical_cols = _meta["categorical_cols"]
+        feature_dim = len(continuous_cols) + len(categorical_cols)
 
-        y_df = pd.read_csv(y_path)
-        y = y_df["label"].astype(np.int64).values
 
+        # meta 정보 추가할 일 있으면 여기에 추가하면 됨
         meta = DatasetMeta(
-            continuous_cols=conti_cols,
-            categorical_cols=cate_cols,
+            horizon=_meta["backward"],
+            sequence=_meta["forward"],
+            continuous_cols=continuous_cols,
+            categorical_cols=categorical_cols,
             feature_dim=feature_dim,
-            num_class=num_class,
+            num_class=_meta["num_class"],
         )
 
-        # (N, F), (N, )
-        return X, y, meta
+        return samples, meta
 
-
-    def make_zscore_data(self) -> ZScoreMeta:
-        X_list: list[np.ndarray] = []
-
-        # imputed_dict 에 들어있는 모든 X 모아서 통계 계산
-        for pattern in self.config.data.missing_patterns:
-            pattern_v = pattern.value
-            ratio_dict = self.imputed_dict[pattern_v]
-
-            for ratio in self.ratios:
-                X_imp = ratio_dict[ratio]["X"]   # (N, F)
-                X_list.append(X_imp)
-
-        X_all = np.concatenate(X_list, axis=0)   # (M, F)
-
-        mean = X_all.mean(axis=0).astype(np.float32)  # (F,)
-        std = X_all.std(axis=0).astype(np.float32)    # (F,)
-
-        # 분산 0인 경우 1로 치환 (branch 없이 mask로 처리)
-        mask = (std == 0.0)
-        std = std + mask.astype(np.float32)
-
-        return ZScoreMeta(
-            mean=mean.tolist(),
-            std=std.tolist(),
-        )
-
-
-    def apply_zscore(self, zscore_meta: ZScoreMeta):
-        mean = np.asarray(zscore_meta.mean, dtype=np.float32)  # (F,)
-        std = np.asarray(zscore_meta.std, dtype=np.float32)    # (F,)
-
-        # original
-        X0 = self.imputed_dict["original"]["X"]   # (N, F)
-        X0 = (X0 - mean) / std
-        self.imputed_dict["original"]["X"] = X0
-
-        # 패턴별 / ratio별
-        for pattern in self.config.data.missing_patterns:
-            pattern_v = pattern.value
-            ratio_dict = self.imputed_dict[pattern_v]
-
-            for ratio in self.ratios:
-                X_imp = ratio_dict[ratio]["X"]    # (N, F)
-                X_imp = (X_imp - mean) / std
-                ratio_dict[ratio]["X"] = X_imp
-
-        return self.imputed_dict
 
 
 

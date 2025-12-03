@@ -36,7 +36,7 @@ class HybridDoubleBranchEncoder(nn.Module):
         self.num_tokens = num_class + 1
         self.start_idx = num_class
 
-        self.embedder = Embedder(embed_dim)
+        self.embedder = Embedder(input_dim, embed_dim)
 
         self.mpie = MPIEModel(embed_dim, feature_hidden_dims)
         self.mpid = MPIDModel(embed_dim, feature_hidden_dims[::-1])
@@ -80,7 +80,7 @@ class HybridDoubleBranchEncoder(nn.Module):
 
         # todo 결측 의존 비의존 제대로
         x_emb, bemv_emb = self.embedder(x, bemv)
-        x_feat = self.mpie(x_emb)
+        x_feat = self.mpie(x_emb, bemv_emb)
         hs = []
 
         for i in range(self.input_dim):

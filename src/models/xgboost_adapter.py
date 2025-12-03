@@ -1,8 +1,6 @@
 # src/models/xgboost_adapter.py
 
 import numpy as np
-
-from sklearn import tree
 from xgboost import XGBClassifier
 from pathlib import Path
 
@@ -10,7 +8,7 @@ from src.configs.configs import Config
 from src.params.data_model import Split
 from src.models.base_model_adapter import BaseModelAdapter
 from src.datasets.data_class import Datasets
-from src.utils.metrics import compute_multitask_classification_metrics
+from src.utils.metrics import compute_classification_metrics
 
 
 class XGBoostAdapter(BaseModelAdapter):
@@ -19,78 +17,60 @@ class XGBoostAdapter(BaseModelAdapter):
         config: Config,
     ):
         super().__init__(config)
-
-        self.models: list[XGBClassifier] | None = None
-
+        self.model: XGBClassifier | None = None
 
     def fit(
         self,
         train_data: Datasets,
         valid_data: Datasets,
     ):
-        # adapter --> 데이터 세트 반환 (numpy)
+        # X: (N, F), y: (N,)
         X_tr, y_tr = train_data.get_data_for_gbdt()
         X_val, y_val = valid_data.get_data_for_gbdt()
 
-
-        # XGBoost 설정
         eval_metric = self.config.model.eval_metric
-        horizon = train_data.get_horizon()
-        self.horizon = horizon
         num_class = train_data.get_num_class()
-        print(f"[XGBoostAdapter] horizon: {horizon}, num_class: {num_class}")
 
+        print(f"[XGBoostAdapter] num_class (from meta): {num_class}")
 
         num_class_from_y = int(max(y_tr.max(), y_val.max()) + 1)
         print(f"[XGBoostAdapter] num_class_from_y: {num_class_from_y}")
 
+        model = XGBClassifier(
+            n_estimators=self.config.train.epochs,
+            objective=self.config.model.objective,
+            num_class=num_class,
+            random_state=self.config.train.seed,
+            eval_metric=eval_metric,
+            early_stopping_rounds=self.config.train.early_stopping_rounds,
+            device=self.config.train.device,
+            tree_method=self.config.train.tree_method,
+        )
 
-        # 각 task(timestep) 별 모델 / history / 예측 저장
-        self.models = []
-        loss_tasks: list[dict] = []
-        train_pred_list: list[np.ndarray] = []
-        valid_pred_list: list[np.ndarray] = []
+        model.fit(
+            X_tr,
+            y_tr,
+            eval_set=[(X_tr, y_tr), (X_val, y_val)],
+        )
 
+        self.model = model
 
-        # 시계열 예측 --> 멀티 태스크 분류로 처리
-        for t in range(horizon):
-            model = XGBClassifier(
-                objective=self.config.model.objective,
-                num_class=num_class,
-                random_state=self.config.train.seed,
-                eval_metric=eval_metric,
-                early_stopping_rounds=self.config.train.early_stopping_rounds,
-                device=self.config.train.device,
-                tree_method=self.config.train.tree_method,
-            )
+        ev = model.evals_result()
+        train_vals = ev["validation_0"][eval_metric]
+        valid_vals = ev["validation_1"][eval_metric]
 
-            model.fit(
-                X_tr, y_tr[:, t],
-                eval_set=[(X_tr, y_tr[:, t]), (X_val, y_val[:, t])],
-            )
+        loss_tasks = [
+            {
+                Split.TRAIN.value: train_vals,
+                Split.VALID.value: valid_vals,
+            }
+        ]
 
-            self.models.append(model)
+        y_tr_pred = model.predict(X_tr)    # (N,)
+        y_val_pred = model.predict(X_val)  # (N,)
 
-            ev = model.evals_result()
-            train_vals = ev["validation_0"][eval_metric]
-            valid_vals = ev["validation_1"][eval_metric]
-
-            loss_tasks.append(
-                {
-                    Split.TRAIN.value: train_vals,
-                    Split.VALID.value: valid_vals,
-                }
-            )
-
-            train_pred_list.append(model.predict(X_tr))
-            valid_pred_list.append(model.predict(X_val))
-
-        y_tr_pred = np.stack(train_pred_list, axis=1)
-        y_val_pred = np.stack(valid_pred_list, axis=1)
-
-
-        train_metrics = compute_multitask_classification_metrics(y_tr, y_tr_pred)
-        valid_metrics = compute_multitask_classification_metrics(y_val, y_val_pred)
+        train_metrics = compute_classification_metrics(y_tr, y_tr_pred)
+        valid_metrics = compute_classification_metrics(y_val, y_val_pred)
 
         results = {
             "split": Split.TRAIN.value,
@@ -98,10 +78,9 @@ class XGBoostAdapter(BaseModelAdapter):
             f"{Split.VALID.value}_metrics": valid_metrics,
             "loss": {
                 "metric_name": eval_metric,
-                "tasks": loss_tasks, # {"train": [...], "valid": [...]}
+                "tasks": loss_tasks,
             },
         }
-
 
         return results
 
@@ -109,28 +88,28 @@ class XGBoostAdapter(BaseModelAdapter):
         self,
         X: np.ndarray,
     ) -> np.ndarray:
-        if self.models is None:
+
+        if self.model is None:
             raise ValueError("모델이 학습되거나 로드되지 않았습니다.")
 
-        preds = []
-        for model in self.models:
-            y_hat = model.predict(X)
-            preds.append(y_hat)
-
-        y_pred = np.stack(preds, axis=1)
+        y_pred = self.model.predict(X)
         return y_pred
 
     def test(
         self,
         test_data: Datasets,
     ):
-        X_all, y_all = test_data.get_data_for_gbdt()
+        if self.model is None:
+            raise ValueError("모델이 학습되거나 로드되지 않았습니다.")
 
-        y_pred_all = self.predict(X_all)
+        # 전체 테스트 데이터 기준 성능
+        X_all, y_all = test_data.get_data_for_gbdt()   # (N, F), (N,)
+        y_pred_all = self.predict(X_all)               # (N,)
 
-        metrics_overall = compute_multitask_classification_metrics(y_all, y_pred_all)
+        metrics_overall = compute_classification_metrics(y_all, y_pred_all)
 
-        by_ratio = {}
+        # 패턴/ratio 별 성능
+        by_ratio: dict[str, dict[float, dict]] = {}
 
         for pattern in self.config.data.missing_patterns:
             p_v = pattern.value
@@ -141,15 +120,12 @@ class XGBoostAdapter(BaseModelAdapter):
             for ratio in test_data.ratios:
                 d = ratio_dict[ratio]
 
-                X = d["X"]
-                y = d["y"]
+                X = d["X"]  # (N, F)
+                y = d["y"]  # (N,)
 
-                X_flat = test_data.get_flat_2d(X)
+                y_pred = self.predict(X)  # (N,)
 
-                y_pred = self.predict(X_flat)
-
-                m = compute_multitask_classification_metrics(y, y_pred)
-
+                m = compute_classification_metrics(y, y_pred)
                 by_ratio[p_v][ratio] = m
 
         results = {
@@ -164,27 +140,20 @@ class XGBoostAdapter(BaseModelAdapter):
         self,
         path: Path
     ):
+        if self.model is None:
+            raise ValueError("저장할 모델이 없습니다.")
+
         save_dir = path / "save"
         save_dir.mkdir(parents=True, exist_ok=True)
 
+        model_path = save_dir / "xgb_model.json"
+        self.model.save_model(model_path)
 
         meta = {
-            "horizon": self.horizon,
+            "model_path": str(model_path),
         }
 
-        save_model_dirs = []
-
-        for t, model in enumerate(self.models):
-            model_dir = save_dir / f"xgb_horizon_{t}.json"
-            model.save_model(model_dir)
-
-            save_model_dirs.append(str(model_dir))
-
-        meta["save_model_dirs"] = save_model_dirs
-
         self.save_meta(save_dir, meta)
-
-
 
     def load(
         self,
@@ -193,22 +162,11 @@ class XGBoostAdapter(BaseModelAdapter):
         save_dir = path / Split.TRAIN.value / "save"
         meta = self.load_meta(save_dir)
 
-        save_model_dirs = meta["save_model_dirs"]
+        model_path = meta["model_path"]
 
-        self.models = []
+        model = XGBClassifier()
+        model.load_model(model_path)
 
-        for model_dir in save_model_dirs:
-            model = XGBClassifier()
-            model.load_model(model_dir)
-            self.models.append(model)
+        self.model = model
 
-        return len(self.models) == len(save_model_dirs) == meta["horizon"]
-
-
-
-
-
-
-
-
-
+        return True

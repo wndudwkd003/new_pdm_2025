@@ -213,7 +213,7 @@ class FTTransformerAdapter(BaseModelAdapter):
 
                 # y: (B, H)
                 loss = F.cross_entropy(logits, y)
-                preds = logits.argmax(dim=-1)  # (B, H)
+                preds = logits.argmax(dim=1) # (B, H)
 
             total_loss += float(loss.item())
             num_batches += 1

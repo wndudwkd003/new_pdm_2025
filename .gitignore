@@ -1,6 +1,6 @@
 datasets/*/data/
 datasets/*/processed_data/
-
+outputs_seeds/
 outputs/
 
 *.pyc

@@ -36,7 +36,7 @@ class HybridDoubleBranchEncoder(nn.Module):
         self.num_tokens = num_class + 1
         self.start_idx = num_class
 
-        self.embedder = Embedder(embed_dim)
+        self.embedder = Embedder(input_dim, embed_dim)
 
         self.mpie = MPIEModel(embed_dim, feature_hidden_dims)
         self.mpid = MPIDModel(embed_dim, feature_hidden_dims[::-1])
