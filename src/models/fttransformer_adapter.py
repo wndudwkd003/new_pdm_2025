@@ -13,11 +13,20 @@ from rtdl_revisiting_models import FTTransformer
 from src.configs.configs import Config
 from src.models.base_model_adapter import BaseModelAdapter
 from src.datasets.data_class import Datasets
-from src.utils.metrics import compute_multitask_classification_metrics
+from src.utils.metrics import compute_classification_metrics
 from src.params.data_model import Split
 
 
 class FTTransformerAdapter(BaseModelAdapter):
+    """
+    rtdl_revisiting_models.FTTransformer 기반 테이블 단일 분류 어댑터.
+
+    - 입력 x: (B, F) 또는 (B, ..., F) 형태의 연속형 feature 텐서
+      → batch 차원만 남기고 나머지는 전부 flatten 해서 하나의 tabular feature로 사용
+    - 출력 logits: (B, C)
+      → C = num_class
+    """
+
     def __init__(
         self,
         config: Config,
@@ -28,23 +37,36 @@ class FTTransformerAdapter(BaseModelAdapter):
         self.device = self.config.train.device
         self.train_mode = self.config.model.stage
 
+        self.feature_dim: int | None = None   # meta 기준 feature_dim
+        self.input_dim: int | None = None     # 실제 입력 차원 (flatten 후)
+        self.num_class: int | None = None
 
-
+    # ------------------------------------------------------------------
+    # 학습
+    # ------------------------------------------------------------------
     def fit(
         self,
         train_data: Datasets,
         valid_data: Datasets,
     ):
+        """
+        단일 FT-Transformer로 테이블 분류를 수행.
+        d_out = num_class 로 설정하여, 출력 (B, C)에 대해 cross_entropy 사용.
+        """
         tr_loader = train_data.get_loader_for_deep(shuffle=True)
         vl_loader = valid_data.get_loader_for_deep(shuffle=False)
 
-        self.feature_dim = train_data.meta.feature_dim
-        self.num_class = train_data.meta.num_class
-        self.horizon = train_data.get_horizon()
-        self.sequence = train_data.meta.sequence
+        # 메타에서 feature_dim / num_class 가져오기
+        self.feature_dim = int(train_data.meta.feature_dim)
+        self.num_class = int(train_data.meta.num_class)
 
-        self.model = self._get_model(self.feature_dim, self.num_class)
+        # 현재 테이블 구조에서는 inputs가 (N, F)이므로 입력 차원 = feature_dim
+        self.input_dim = self.feature_dim
 
+        # ★ 여기서 먼저 모델 생성 ★
+        self.model = self._get_model(self.input_dim, self.num_class)
+
+        # 그 다음에 optimizer / scheduler 생성
         optimizer, scheduler = self.get_deeplearning_utils()
 
         best_valid_loss = None
@@ -56,8 +78,9 @@ class FTTransformerAdapter(BaseModelAdapter):
         train_losses: list[float] = []
         valid_losses: list[float] = []
 
+        num_epochs = self.config.train.epochs
 
-        for epoch in range(self.config.train.epochs):
+        for epoch in range(num_epochs):
             train_loss = self.run_epoch(
                 loader=tr_loader,
                 optimizer=optimizer,
@@ -82,43 +105,42 @@ class FTTransformerAdapter(BaseModelAdapter):
             train_losses.append(train_loss)
             valid_losses.append(valid_loss)
 
-
             scheduler.step()
 
             # early stopping
             if best_valid_loss is None or valid_loss < best_valid_loss:
                 best_valid_loss = valid_loss
                 patience = 0
-                best_state = {k: v.cpu() for k, v in self.model.state_dict().items()}
-
+                if self.model is not None:
+                    best_state = {k: v.cpu() for k, v in self.model.state_dict().items()}
             else:
                 patience += 1
 
             if patience >= max_patience:
-                print(f"Early stopping at epoch {epoch+1}")
+                print(f"[{self.config.model.model.name}] Early stopping at epoch {epoch + 1}")
                 break
 
-        self.model.load_state_dict(best_state)
-        self.model.to(self.device)
+        # best state 로드
+        if best_state is not None and self.model is not None:
+            self.model.load_state_dict(best_state)
+            self.model.to(self.device)
 
         # 최종 성능 계산
         _, tr_preds, tr_labels, _, _ = self.predict(tr_loader)
         _, vl_preds, vl_labels, _, _ = self.predict(vl_loader)
 
-        train_metrics = compute_multitask_classification_metrics(tr_labels, tr_preds)
-        valid_metrics = compute_multitask_classification_metrics(vl_labels, vl_preds)
+        train_metrics = compute_classification_metrics(tr_labels, tr_preds)
+        valid_metrics = compute_classification_metrics(vl_labels, vl_preds)
 
         metric_name = "cross_entropy"
 
-        H = self.horizon
-        tasks = []
-        for _ in range(H):
-            tasks.append(
-                {
-                    Split.TRAIN.value: train_losses,
-                    Split.VALID.value: valid_losses,
-                }
-            )
+        # 단일 task 로 loss curve 기록
+        tasks = [
+            {
+                Split.TRAIN.value: train_losses,
+                Split.VALID.value: valid_losses,
+            }
+        ]
 
         loss_info = {
             "metric_name": metric_name,
@@ -134,6 +156,48 @@ class FTTransformerAdapter(BaseModelAdapter):
 
         return results
 
+    # ------------------------------------------------------------------
+    # 단일 epoch 학습 / 검증
+    # ------------------------------------------------------------------
+    def run_epoch(
+        self,
+        loader: DataLoader,
+        optimizer: torch.optim.Optimizer | None,
+        split: Split,
+    ):
+        is_train = (split == Split.TRAIN)
+
+        self.model.train() if is_train else self.model.eval()
+
+        desc = self.get_desc(self.config.model.model.name, split)
+
+        total_loss = 0.0
+        num_batches = 0
+
+        for batch in tqdm(loader, desc=desc):
+            x, y, _, _, _, _ = self._prepare_batch(batch)
+            # x: (B, F) 또는 (B, ..., F)
+            # y: (B,)
+
+            x_flat = self._flatten_x(x)  # (B, input_dim)
+
+            logits = self.model(x_flat, None)  # (B, C)
+
+            loss = F.cross_entropy(logits, y)
+
+            if is_train:
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
+
+            num_batches += 1
+            total_loss += float(loss.item())
+
+        return total_loss / max(1, num_batches)
+
+    # ------------------------------------------------------------------
+    # 테스트
+    # ------------------------------------------------------------------
     def test(
         self,
         test_data: Datasets,
@@ -146,7 +210,7 @@ class FTTransformerAdapter(BaseModelAdapter):
         loss, preds_all, labels_all, pattern_idx_all, ratio_idx_all = self.predict(te_loader)
 
         # overall metric
-        metrics_overall = compute_multitask_classification_metrics(labels_all, preds_all)
+        metrics_overall = compute_classification_metrics(labels_all, preds_all)
 
         # pattern/ratio 별 metric
         patterns = test_data.config.data.missing_patterns
@@ -166,7 +230,7 @@ class FTTransformerAdapter(BaseModelAdapter):
                 y_sub = labels_all[mask]
                 y_hat_sub = preds_all[mask]
 
-                m = compute_multitask_classification_metrics(y_sub, y_hat_sub)
+                m = compute_classification_metrics(y_sub, y_hat_sub)
                 metrics_by_ratio[p_val][ratio] = m
 
         results = {
@@ -178,7 +242,9 @@ class FTTransformerAdapter(BaseModelAdapter):
 
         return results
 
-
+    # ------------------------------------------------------------------
+    # 예측
+    # ------------------------------------------------------------------
     def predict(
         self,
         loader: DataLoader,
@@ -201,19 +267,12 @@ class FTTransformerAdapter(BaseModelAdapter):
         for batch in tqdm(loader, desc=desc):
             x, y, _, _, pattern_idx, ratio_idx = self._prepare_batch(batch)
 
-            x_flat = self._flatten_x(x)
+            x_flat = self._flatten_x(x)  # (B, input_dim)
 
             with torch.no_grad():
-                logits = self.model(x_flat, None)  # (B, H * C)
-                B = logits.size(0)
-                H = self.horizon
-                C = self.num_class
-
-                logits = logits.view(B, H, C).permute(0, 2, 1)
-
-                # y: (B, H)
+                logits = self.model(x_flat, None)  # (B, C)
                 loss = F.cross_entropy(logits, y)
-                preds = logits.argmax(dim=1) # (B, H)
+                preds = logits.argmax(dim=1)       # (B,)
 
             total_loss += float(loss.item())
             num_batches += 1
@@ -232,57 +291,17 @@ class FTTransformerAdapter(BaseModelAdapter):
 
         return avg_loss, preds_all, labels_all, pattern_idx_all, ratio_idx_all
 
-
-    def run_epoch(
-        self,
-        loader: DataLoader,
-        optimizer: torch.optim.Optimizer | None,
-        split: Split,
-    ):
-        is_train = (split == Split.TRAIN)
-
-        self.model.train() if is_train else self.model.eval()
-
-        desc = self.get_desc(self.config.model.model.name, split)
-
-        total_loss = 0.0
-        num_batches = 0
-
-        for batch in tqdm(loader, desc=desc):
-            x, y, _, _, _, _ = self._prepare_batch(batch)
-            # y: (B, H)
-
-            x_flat = self._flatten_x(x)
-
-            logits = self.model(x_flat, None)  # (B, H * C)
-            B = logits.size(0)
-            H = self.horizon
-            C = self.num_class
-
-            logits = logits.view(B, H, C).permute(0, 2, 1)
-
-            # y: (B, H)
-            loss = F.cross_entropy(logits, y)
-
-            if is_train:
-                optimizer.zero_grad()
-                loss.backward()
-                optimizer.step()
-
-            num_batches += 1
-            total_loss += float(loss.item())
-
-        return total_loss / max(1, num_batches)
-
-
+    # ------------------------------------------------------------------
+    # 배치 준비
+    # ------------------------------------------------------------------
     def _prepare_batch(
         self,
         batch: dict,
     ):
-        x = batch["x"].to(self.device)
-        y = batch["y"].to(self.device)
-        x_ori = batch["x_originals"].to(self.device)
-        bemv = batch["bemv"].to(self.device)
+        x = batch["x"].to(self.device)                # (B, F) or (B, ..., F)
+        y = batch["y"].to(self.device)                # (B,)
+        x_ori = batch["x_originals"].to(self.device)  # 사용하지 않지만 유지
+        bemv = batch["bemv"].to(self.device)          # 사용하지 않지만 유지
         pattern_idx = batch["pattern_idx"]
         ratio_idx = batch["ratio_idx"]
 
@@ -293,14 +312,19 @@ class FTTransformerAdapter(BaseModelAdapter):
         x_flat = x.view(B, -1)
         return x_flat
 
-
+    # ------------------------------------------------------------------
+    # 모델 생성
+    # ------------------------------------------------------------------
     def _get_model(
         self,
         input_dim: int,
-        num_class: int,
-    ):
-        d_in = self.sequence * input_dim
-        d_out = self.horizon * num_class
+        num_class: int | None,
+    ) -> FTTransformer:
+        if num_class is None:
+            raise ValueError("num_class가 설정되지 않았습니다.")
+
+        d_in = input_dim
+        d_out = int(num_class)
 
         ft_kwargs = FTTransformer.get_default_kwargs()
         model = FTTransformer(
@@ -312,8 +336,9 @@ class FTTransformerAdapter(BaseModelAdapter):
 
         return model
 
-
-
+    # ------------------------------------------------------------------
+    # 저장 / 로드
+    # ------------------------------------------------------------------
     def save(
         self,
         path: Path,
@@ -329,10 +354,9 @@ class FTTransformerAdapter(BaseModelAdapter):
 
         meta = {
             "feature_dim": self.feature_dim,
+            "input_dim": self.input_dim,
             "num_class": self.num_class,
-            "horizon": self.horizon,
             "model_path": str(model_path),
-            "sequence": self.sequence,
         }
 
         self.save_meta(save_dir, meta)
@@ -346,14 +370,13 @@ class FTTransformerAdapter(BaseModelAdapter):
         save_dir = path / Split.TRAIN.value / "save"
         meta = self.load_meta(save_dir)
 
-        self.feature_dim = meta["feature_dim"]
-        self.num_class = meta["num_class"]
-        self.horizon = meta["horizon"]
-        self.sequence = meta["sequence"]
+        self.feature_dim = int(meta["feature_dim"])
+        self.input_dim = int(meta["input_dim"])
+        self.num_class = int(meta["num_class"])
 
         model_path = Path(meta["model_path"])
 
-        self.model = self._get_model(self.feature_dim, self.num_class)
+        self.model = self._get_model(self.input_dim, self.num_class)
 
         state = torch.load(model_path, map_location=self.device)
         self.model.load_state_dict(state)

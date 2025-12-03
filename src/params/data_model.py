@@ -18,8 +18,11 @@ class ModelType(Enum):
 
     TABTRANSFORMER = "tabtransformer"
     FTTRANSFORMER = "fttransformer"
-
-    PATCHTST = "patchtst"
+    TABNET = "tabnet"
+    MLP = "mlp"
+    RESMLP = "resmlp"
+    DEEPTLF = "deeptlf"
+    TABPFN = "tabpfn"
 
 
 

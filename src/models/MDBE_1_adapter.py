@@ -1,5 +1,3 @@
-# src/models/MDBE_1_adapter.py
-
 import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
@@ -11,7 +9,7 @@ from src.configs.configs import Config
 from src.models.base_model_adapter import BaseModelAdapter
 from src.core.models.MDBE_1 import HybridDoubleBranchEncoder
 from src.datasets.data_class import Datasets
-from src.utils.metrics import compute_multitask_classification_metrics
+from src.utils.metrics import compute_classification_metrics
 from src.core.utils.losses import info_nce_loss
 from src.params.data_model import Split, StageType
 
@@ -27,20 +25,21 @@ class MDBE_1_Adapter(BaseModelAdapter):
         self.device = self.config.train.device
         self.train_mode = self.config.model.stage
 
+        self.feature_dim: int | None = None
+        self.num_class: int | None = None
 
     def fit(
         self,
         train_data: Datasets,
         valid_data: Datasets,
     ):
-
         tr_loader = train_data.get_loader_for_deep(shuffle=True)
         vl_loader = valid_data.get_loader_for_deep(shuffle=False)
 
         self.feature_dim = train_data.meta.feature_dim
         self.num_class = train_data.meta.num_class
-        self.horizon = train_data.get_horizon()
 
+        # 모델 생성 (horizon 제거됨)
         self.model = self._get_model(self.feature_dim, self.num_class)
         self.model.to(self.device)
 
@@ -82,7 +81,6 @@ class MDBE_1_Adapter(BaseModelAdapter):
                 best_valid_loss = valid_loss
                 patience = 0
                 best_state = {k: v.cpu() for k, v in self.model.state_dict().items()}
-
             else:
                 patience += 1
 
@@ -90,31 +88,31 @@ class MDBE_1_Adapter(BaseModelAdapter):
                 print(f"Early stopping at epoch {epoch+1}")
                 break
 
-        self.model.load_state_dict(best_state)
+        # Best state 로드
+        if best_state is not None:
+            self.model.load_state_dict(best_state)
         self.model.to(self.device)
 
+        # 결과 계산
         if self.train_mode == StageType.FINETUNE:
             _, tr_preds, tr_labels, _, _ = self.predict(tr_loader)
             _, vl_preds, vl_labels, _, _ = self.predict(vl_loader)
 
-            train_metrics = compute_multitask_classification_metrics(tr_labels, tr_preds)
-            valid_metrics = compute_multitask_classification_metrics(vl_labels, vl_preds)
+            train_metrics = compute_classification_metrics(tr_labels, tr_preds)
+            valid_metrics = compute_classification_metrics(vl_labels, vl_preds)
             metric_name = "cross_entropy"
-
         else:
             train_metrics = {}
             valid_metrics = {}
             metric_name = "info_nce_recon_loss"
 
-        H = self.horizon
-        tasks = []
-        for _ in range(H):
-            tasks.append(
-                {
-                    Split.TRAIN.value: train_losses,
-                    Split.VALID.value: valid_losses,
-                }
-            )
+        # 단일 Task Loss 기록
+        tasks = [
+            {
+                Split.TRAIN.value: train_losses,
+                Split.VALID.value: valid_losses,
+            }
+        ]
 
         loss_info = {
             "metric_name": metric_name,
@@ -130,7 +128,6 @@ class MDBE_1_Adapter(BaseModelAdapter):
 
         return results
 
-
     def test(
         self,
         test_data: Datasets,
@@ -141,13 +138,12 @@ class MDBE_1_Adapter(BaseModelAdapter):
         if self.train_mode != StageType.FINETUNE:
             raise ValueError("테스트는 파인튜닝 단계에서만 가능합니다.")
 
-
         te_loader = test_data.get_loader_for_deep(shuffle=False)
 
         loss, preds_all, labels_all, pattern_idx_all, ratio_idx_all = self.predict(te_loader)
 
         # overall metric
-        metrics_overall = compute_multitask_classification_metrics(labels_all, preds_all)
+        metrics_overall = compute_classification_metrics(labels_all, preds_all)
 
         # pattern/ratio 별 metric
         patterns = test_data.config.data.missing_patterns
@@ -167,7 +163,7 @@ class MDBE_1_Adapter(BaseModelAdapter):
                 y_sub = labels_all[mask]
                 y_hat_sub = preds_all[mask]
 
-                m = compute_multitask_classification_metrics(y_sub, y_hat_sub)
+                m = compute_classification_metrics(y_sub, y_hat_sub)
                 metrics_by_ratio[p_val][ratio] = m
 
         results = {
@@ -204,15 +200,10 @@ class MDBE_1_Adapter(BaseModelAdapter):
 
             with torch.no_grad():
                 out = self.model(x, bemv)
-                logits = out["logits"]          # (B, H, C)
-                B, H, C = logits.shape
+                logits = out["logits"]  # (B, C)
 
-                logits_flat = logits.reshape(B * H, C)
-                y_flat = y.reshape(B * H)
-
-                loss = F.cross_entropy(logits_flat, y_flat)
-
-                preds = logits.argmax(dim=-1)   # (B, H)
+                loss = F.cross_entropy(logits, y)
+                preds = logits.argmax(dim=-1)  # (B,)
 
             total_loss += float(loss.item())
             num_batches += 1
@@ -224,25 +215,21 @@ class MDBE_1_Adapter(BaseModelAdapter):
 
         avg_loss = total_loss / max(1, num_batches)
 
-        preds_all = torch.cat(all_preds, dim=0).numpy()          # (N, H)
-        labels_all = torch.cat(all_labels, dim=0).numpy()        # (N, H)
-        pattern_idx_all = torch.cat(all_pattern_idx, dim=0).numpy()  # (N,)
-        ratio_idx_all = torch.cat(all_ratio_idx, dim=0).numpy()      # (N,)
+        preds_all = torch.cat(all_preds, dim=0).numpy()
+        labels_all = torch.cat(all_labels, dim=0).numpy()
+        pattern_idx_all = torch.cat(all_pattern_idx, dim=0).numpy()
+        ratio_idx_all = torch.cat(all_ratio_idx, dim=0).numpy()
 
         return avg_loss, preds_all, labels_all, pattern_idx_all, ratio_idx_all
-
-
 
     def run_epoch(
         self,
         loader: DataLoader,
         optimizer: torch.optim.Optimizer | None,
         split: Split,
-
     ):
         is_train = (split == Split.TRAIN)
         self.model.train() if is_train else self.model.eval()
-
 
         desc = f"[{self.config.model.model.name} {split.name}]"
 
@@ -252,14 +239,14 @@ class MDBE_1_Adapter(BaseModelAdapter):
         for batch in tqdm(loader, desc=desc):
             x, y, x_ori, bemv, _, _ = self._prepare_batch(batch)
 
+            # Pretrain시 사용할 clean mask (모두 1)
             clean_bemv = torch.ones_like(bemv)
 
             with torch.set_grad_enabled(is_train):
-
                 if self.train_mode == StageType.PRETRAIN:
+                    # Pretrain: Reconstruction + InfoNCE
                     out1 = self.model(x, bemv)
                     out2 = self.model(x_ori, clean_bemv)
-
 
                     z_masked = out1["latent"]
                     z_clean = out2["latent"]
@@ -270,24 +257,21 @@ class MDBE_1_Adapter(BaseModelAdapter):
                         self.config.train.temperature
                     )
 
-
                     recon1 = out1["recon"]
                     recon2 = out2["recon"]
 
+                    # 단순 MSE Loss (B, F)
                     recon_loss = (F.mse_loss(recon1, x_ori) +
                                   F.mse_loss(recon2, x_ori))
 
                     loss = recon_loss + info_loss
 
                 elif self.train_mode == StageType.FINETUNE:
+                    # Finetune: Classification
                     out = self.model(x, bemv)
+                    logits = out["logits"] # (B, C)
 
-                    logits = out["logits"]
-                    B, H, C = logits.shape
-                    logits_flat = logits.reshape(B * H, C)
-                    y_flat = y.reshape(B * H)
-
-                    loss = F.cross_entropy(logits_flat, y_flat)
+                    loss = F.cross_entropy(logits, y)
 
                 if is_train:
                     optimizer.zero_grad()
@@ -299,27 +283,37 @@ class MDBE_1_Adapter(BaseModelAdapter):
 
         return total_loss / num_batches
 
-
-
     def _prepare_batch(
         self,
         batch: dict,
     ):
+        # Flatten logic: (B, H, F) -> (B, F) 또는 (B, 1, F) -> (B, F)
+        # 데이터가 이미 2D (B, F)라면 그대로 사용
         x = batch["x"].to(self.device)
+        if x.dim() > 2:
+            x = x.view(x.size(0), -1)
+
         y = batch["y"].to(self.device)
+
         x_ori = batch["x_originals"].to(self.device)
+        if x_ori.dim() > 2:
+            x_ori = x_ori.view(x_ori.size(0), -1)
+
         bemv = batch["bemv"].to(self.device)
+        if bemv.dim() > 2:
+            bemv = bemv.view(bemv.size(0), -1)
+
         pattern_idx = batch["pattern_idx"]
         ratio_idx = batch["ratio_idx"]
 
         return x, y, x_ori, bemv, pattern_idx, ratio_idx
-
 
     def _get_model(
         self,
         input_dim: int,
         num_class: int,
     ):
+        # horizon 인자 제거
         model = HybridDoubleBranchEncoder(
             input_dim=input_dim,
             embed_dim=self.config.params.embed_dim,
@@ -329,12 +323,9 @@ class MDBE_1_Adapter(BaseModelAdapter):
             transformer_layers=self.config.params.transformer_layers,
             decoder_hidden_dim=self.config.params.decoder_hidden_dim,
             total_layer=self.config.params.total_layer,
-            horizon=self.horizon,
+            # horizon=self.horizon  <-- 제거됨
         ).to(self.device)
         return model
-
-
-
 
     def save(
         self,
@@ -353,14 +344,12 @@ class MDBE_1_Adapter(BaseModelAdapter):
             "feature_dim": self.feature_dim,
             "num_class": self.num_class,
             "model_path": str(model_path),
-            "horizon": self.horizon,
+            # "horizon": self.horizon <-- 제거됨
         }
 
         self.save_meta(save_dir, meta)
 
         return model_path
-
-
 
     def load(
         self,
@@ -368,16 +357,19 @@ class MDBE_1_Adapter(BaseModelAdapter):
     ):
         save_dir = path / Split.TRAIN.value / "save"
         meta = self.load_meta(save_dir)
+
         feature_dim = int(meta["feature_dim"])
         num_class = int(meta["num_class"])
         model_path = Path(meta["model_path"])
-        self.horizon = int(meta["horizon"])
+
         self.feature_dim = feature_dim
         self.num_class = num_class
         self.device = self.config.train.device
+
         self.model = self._get_model(feature_dim, num_class)
         state = torch.load(model_path, map_location=self.device)
         self.model.load_state_dict(state)
         self.model.to(self.device)
         self.model.eval()
+
         return True

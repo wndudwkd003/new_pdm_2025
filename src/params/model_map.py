@@ -8,41 +8,46 @@ def get_lightgbm_adapter():
     from src.models.lightgbm_adapter import LightGBMAdapter
     return LightGBMAdapter
 
-# def get_rf_adapter():
-#     from src.models.rf_adapter import RandomForestAdapter
-#     return RandomForestAdapter
+def get_rf_adapter():
+    from src.models.rf_adapter import RandomForestAdapter
+    return RandomForestAdapter
 
-# def get_tabtransformer_adapter():
-#     from src.models.tab_transformer_adapter import TabTransformerAdapter
-#     return TabTransformerAdapter
+def get_tabtransformer_adapter():
+    from src.models.tab_transformer_adapter import TabTransformerAdapter
+    return TabTransformerAdapter
 
-# def get_fttransformer_adapter():
-#     from src.models.fttransformer_adapter import FTTransformerAdapter
-#     return FTTransformerAdapter
+def get_fttransformer_adapter():
+    from src.models.fttransformer_adapter import FTTransformerAdapter
+    return FTTransformerAdapter
 
-# def get_patchtst_adapter():
-#     from src.models.patchtst_adapter import PatchTSTAdapter
-#     return PatchTSTAdapter
+def get_tabnet_adapter():
+    from src.models.tabnet_adapter import TabNetAdapter
+    return TabNetAdapter
+
+def get_deeptlf_adapter():
+    from src.models.deeptlf_adapter import DeepTLFAdapter
+    return DeepTLFAdapter
+
+def get_tabfpn_adapter():
+    from src.models.tabpfn_adapter import TabPFNAdapter
+    return TabPFNAdapter
+
+def get_mlp_adapter():
+    from src.models.mlp_adapter import MLPAdapter
+    return MLPAdapter
+
+def get_resmlp_adapter():
+    from src.models.resmlp_adapter import ResMLPAdapter
+    return ResMLPAdapter
+
+
 
 # def get_mdbe_1_adapter():
 #     from src.models.MDBE_1_adapter import MDBE_1_Adapter
 #     return MDBE_1_Adapter
 
-# def get_mdbe_1_balanced_adapter():
-#     from src.models.MDBE_1_balanced_adapter import MDBE_1_BALANCED_Adapter
-#     return MDBE_1_BALANCED_Adapter
 
-# def get_mdbe_1_e2e_adapter():
-#     from src.models.MDBE_1_e2e_adapter import MDBE_1_E2E_Adapter
-#     return MDBE_1_E2E_Adapter
 
-# def get_mdbe_2_adapter():
-#     from src.models.MDBE_2_adapter import MDBE_2_Adapter
-#     return MDBE_2_Adapter
-
-# def get_mdbe_3_e2e_adapter():
-#     from src.models.MDBE_3_e2e_adapter import MDBE_3_E2E_Adapter
-#     return MDBE_3_E2E_Adapter
 
 
 
@@ -53,19 +58,21 @@ MODEL_MAP = {
     # GBDT 계열
     ModelType.XGBOOST: get_xgb_adapter(),
     ModelType.LIGHTGBM: get_lightgbm_adapter(),
-    # ModelType.RANDOMFOREST: get_rf_adapter(),
+    ModelType.RANDOMFOREST: get_rf_adapter(),
 
     # # Deep 계열
-    # ModelType.TABTRANSFORMER: get_tabtransformer_adapter(),
-    # ModelType.FTTRANSFORMER: get_fttransformer_adapter(),
-    # ModelType.PATCHTST: get_patchtst_adapter(),
+    ModelType.TABTRANSFORMER: get_tabtransformer_adapter(),
+    ModelType.FTTRANSFORMER: get_fttransformer_adapter(),
+    ModelType.TABNET: get_tabnet_adapter(),
+    ModelType.DEEPTLF: get_deeptlf_adapter(),
+    ModelType.TABPFN: get_tabfpn_adapter(),
+    ModelType.MLP: get_mlp_adapter(),
+    ModelType.RESMLP: get_resmlp_adapter(),
+
 
     # # Custom MDBE 계열
     # ModelType.MDBE_1: get_mdbe_1_adapter(),
-    # ModelType.MDBE_1_BALANCED: get_mdbe_1_balanced_adapter(),
     # ModelType.MDBE_1_E2E: get_mdbe_1_e2e_adapter(),
-    # ModelType.MDBE_2: get_mdbe_2_adapter(),
-    # ModelType.MDBE_3_E2E: get_mdbe_3_e2e_adapter(),
 }
 
 

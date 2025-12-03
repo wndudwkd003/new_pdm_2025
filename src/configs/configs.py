@@ -31,11 +31,11 @@ class Data:
 @dataclass
 class Train:
     epochs: int = 1000
-    batch_size: int = 16 # 8
+    batch_size: int = 128 # 8
     lr: float = 1e-3
     device: str = "cuda"
     output_dir: str = "outputs"
-    seed: int = 6652
+    seed: int = 42
     early_stopping_rounds: int = 15
     lr_min: float = 1e-5
     tree_method: str = "hist"
@@ -43,10 +43,10 @@ class Train:
 
 @dataclass
 class Model:
-    model: ModelType = ModelType.XGBOOST
+    model: ModelType = ModelType.MLP
     stage: StageType = StageType.NONE
     other_prefix: str = ""
-    save_work_dir: str = "outputs/2025-12-03_09-35-22_xgboost_seed6652_0.0_to_0.5_0.1_step_multi_mcar_zero"
+    save_work_dir: str = ""
     model_size: ModelSize = ModelSize.NONE
 
     # xgboost

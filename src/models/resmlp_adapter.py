@@ -1,6 +1,7 @@
-# src/models/MDBE_1_adapter.py
+# src/models/resmlp_adapter.py
 
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 import numpy as np
@@ -9,40 +10,92 @@ from tqdm.auto import tqdm
 
 from src.configs.configs import Config
 from src.models.base_model_adapter import BaseModelAdapter
-from src.core.models.MDBE_3 import HybridDoubleBranchEncoder
 from src.datasets.data_class import Datasets
-from src.utils.metrics import compute_multitask_classification_metrics
-from src.core.utils.losses import info_nce_loss
-from src.params.data_model import Split, StageType
+from src.utils.metrics import compute_classification_metrics
+from src.params.data_model import Split
 
 
-class MDBE_3_E2E_Adapter(BaseModelAdapter):
+class ResBlock(nn.Module):
+    def __init__(
+        self,
+        dim: int,
+        hidden_dim: int,
+        dropout: float = 0.1,
+    ):
+        super().__init__()
+
+        self.fc1 = nn.Linear(dim, hidden_dim)
+        self.fc2 = nn.Linear(hidden_dim, dim)
+        self.norm = nn.LayerNorm(dim)
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        h = self.fc1(x)
+        h = F.relu(h)
+        h = self.dropout(h)
+        h = self.fc2(h)
+        h = self.dropout(h)
+        x = x + h
+        x = self.norm(x)
+        return x
+
+
+class ResMLPBackbone(nn.Module):
+    def __init__(
+        self,
+        input_dim: int,
+        num_class: int,
+        d_model: int = 256,
+        num_layers: int = 4,
+        hidden_dim: int = 256,
+        dropout: float = 0.1,
+    ):
+        super().__init__()
+
+        self.input_proj = nn.Linear(input_dim, d_model)
+
+        blocks = []
+        for _ in range(num_layers):
+            blocks.append(ResBlock(d_model, hidden_dim, dropout))
+        self.blocks = nn.Sequential(*blocks)
+
+        self.head = nn.Linear(d_model, num_class)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        h = self.input_proj(x)
+        h = self.blocks(h)
+        logits = self.head(h)
+        return logits
+
+
+class ResMLPAdapter(BaseModelAdapter):
     def __init__(
         self,
         config: Config,
     ):
         super().__init__(config)
 
-        self.model: HybridDoubleBranchEncoder | None = None
+        self.model: ResMLPBackbone | None = None
         self.device = self.config.train.device
         self.train_mode = self.config.model.stage
 
+        self.feature_dim: int | None = None
+        self.input_dim: int | None = None
+        self.num_class: int | None = None
 
     def fit(
         self,
         train_data: Datasets,
         valid_data: Datasets,
     ):
-
         tr_loader = train_data.get_loader_for_deep(shuffle=True)
         vl_loader = valid_data.get_loader_for_deep(shuffle=False)
 
-        self.feature_dim = train_data.meta.feature_dim
-        self.num_class = train_data.meta.num_class
-        self.horizon = train_data.get_horizon()
+        self.feature_dim = int(train_data.meta.feature_dim)
+        self.num_class = int(train_data.meta.num_class)
+        self.input_dim = self.feature_dim
 
-        self.model = self._get_model(self.feature_dim, self.num_class)
-
+        self.model = self._get_model(self.input_dim, self.num_class)
 
         optimizer, scheduler = self.get_deeplearning_utils()
 
@@ -51,25 +104,32 @@ class MDBE_3_E2E_Adapter(BaseModelAdapter):
         patience = 0
         max_patience = self.config.train.early_stopping_rounds
 
-        lrs = []
-        train_losses = []
-        valid_losses = []
+        lrs: list[float] = []
+        train_losses: list[float] = []
+        valid_losses: list[float] = []
 
-        for epoch in range(self.config.train.epochs):
+        num_epochs = self.config.train.epochs
+
+        for epoch in range(num_epochs):
             train_loss = self.run_epoch(
                 loader=tr_loader,
                 optimizer=optimizer,
-                split=Split.TRAIN
+                split=Split.TRAIN,
             )
             valid_loss = self.run_epoch(
                 loader=vl_loader,
                 optimizer=None,
-                split=Split.VALID
+                split=Split.VALID,
             )
 
-            lr = float(optimizer.param_groups[0]['lr'])
+            lr = float(optimizer.param_groups[0]["lr"])
 
-            print(f"[{self.config.model.model.name} Epoch {epoch+1}] Train Loss: {train_loss:.4f} | Valid Loss: {valid_loss:.4f} | LR: {lr:.6f}")
+            print(
+                f"[{self.config.model.model.name} Epoch {epoch + 1}] "
+                f"Train Loss: {train_loss:.4f} | "
+                f"Valid Loss: {valid_loss:.4f} | "
+                f"LR: {lr:.6f}"
+            )
 
             lrs.append(lr)
             train_losses.append(train_loss)
@@ -77,39 +137,36 @@ class MDBE_3_E2E_Adapter(BaseModelAdapter):
 
             scheduler.step()
 
-            # early stopping
             if best_valid_loss is None or valid_loss < best_valid_loss:
                 best_valid_loss = valid_loss
                 patience = 0
-                best_state = {k: v.cpu() for k, v in self.model.state_dict().items()}
-
+                if self.model is not None:
+                    best_state = {k: v.cpu() for k, v in self.model.state_dict().items()}
             else:
                 patience += 1
 
             if patience >= max_patience:
-                print(f"Early stopping at epoch {epoch+1}")
+                print(f"[{self.config.model.model.name}] Early stopping at epoch {epoch + 1}")
                 break
 
-        self.model.load_state_dict(best_state)
-        self.model.to(self.device)
+        if best_state is not None and self.model is not None:
+            self.model.load_state_dict(best_state)
+            self.model.to(self.device)
 
         _, tr_preds, tr_labels, _, _ = self.predict(tr_loader)
         _, vl_preds, vl_labels, _, _ = self.predict(vl_loader)
 
-        train_metrics = compute_multitask_classification_metrics(tr_labels, tr_preds)
-        valid_metrics = compute_multitask_classification_metrics(vl_labels, vl_preds)
-        metric_name = "cross_entropy_info_nce_recon_loss"
+        train_metrics = compute_classification_metrics(tr_labels, tr_preds)
+        valid_metrics = compute_classification_metrics(vl_labels, vl_preds)
 
+        metric_name = "cross_entropy"
 
-        H = self.horizon
-        tasks = []
-        for _ in range(H):
-            tasks.append(
-                {
-                    Split.TRAIN.value: train_losses,
-                    Split.VALID.value: valid_losses,
-                }
-            )
+        tasks = [
+            {
+                Split.TRAIN.value: train_losses,
+                Split.VALID.value: valid_losses,
+            }
+        ]
 
         loss_info = {
             "metric_name": metric_name,
@@ -125,6 +182,42 @@ class MDBE_3_E2E_Adapter(BaseModelAdapter):
 
         return results
 
+    def run_epoch(
+        self,
+        loader: DataLoader,
+        optimizer: torch.optim.Optimizer | None,
+        split: Split,
+    ):
+        is_train = split == Split.TRAIN
+
+        if self.model is None:
+            raise ValueError("모델이 초기화되지 않았습니다.")
+
+        self.model.train() if is_train else self.model.eval()
+
+        desc = self.get_desc(self.config.model.model.name, split)
+
+        total_loss = 0.0
+        num_batches = 0
+
+        for batch in tqdm(loader, desc=desc):
+            x, y, _, _, _, _ = self._prepare_batch(batch)
+
+            x_flat = self._flatten_x(x)
+
+            logits = self.model(x_flat)
+
+            loss = F.cross_entropy(logits, y)
+
+            if is_train:
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
+
+            num_batches += 1
+            total_loss += float(loss.item())
+
+        return total_loss / max(1, num_batches)
 
     def test(
         self,
@@ -133,16 +226,12 @@ class MDBE_3_E2E_Adapter(BaseModelAdapter):
         if self.model is None:
             raise ValueError("모델이 학습되거나 로드되지 않았습니다.")
 
-
-
         te_loader = test_data.get_loader_for_deep(shuffle=False)
 
         loss, preds_all, labels_all, pattern_idx_all, ratio_idx_all = self.predict(te_loader)
 
-        # overall metric
-        metrics_overall = compute_multitask_classification_metrics(labels_all, preds_all)
+        metrics_overall = compute_classification_metrics(labels_all, preds_all)
 
-        # pattern/ratio 별 metric
         patterns = test_data.config.data.missing_patterns
         ratios = test_data.ratios
 
@@ -160,7 +249,7 @@ class MDBE_3_E2E_Adapter(BaseModelAdapter):
                 y_sub = labels_all[mask]
                 y_hat_sub = preds_all[mask]
 
-                m = compute_multitask_classification_metrics(y_sub, y_hat_sub)
+                m = compute_classification_metrics(y_sub, y_hat_sub)
                 metrics_by_ratio[p_val][ratio] = m
 
         results = {
@@ -189,20 +278,17 @@ class MDBE_3_E2E_Adapter(BaseModelAdapter):
         all_pattern_idx = []
         all_ratio_idx = []
 
-        for batch in tqdm(loader, desc=f"[{self.config.model.model.name} PRED]"):
-            x, y, _, bemv, pattern_idx, ratio_idx = self._prepare_batch(batch)
+        desc = self.get_desc(self.config.model.model.name, Split.TEST)
+
+        for batch in tqdm(loader, desc=desc):
+            x, y, _, _, pattern_idx, ratio_idx = self._prepare_batch(batch)
+
+            x_flat = self._flatten_x(x)
 
             with torch.no_grad():
-                out = self.model(x, bemv)
-                logits = out["logits"]          # (B, H, C)
-                B, H, C = logits.shape
-
-                logits_flat = logits.reshape(B * H, C)
-                y_flat = y.reshape(B * H)
-
-                loss = F.cross_entropy(logits_flat, y_flat)
-
-                preds = logits.argmax(dim=-1)   # (B, H)
+                logits = self.model(x_flat)
+                loss = F.cross_entropy(logits, y)
+                preds = logits.argmax(dim=1)
 
             total_loss += float(loss.item())
             num_batches += 1
@@ -214,77 +300,12 @@ class MDBE_3_E2E_Adapter(BaseModelAdapter):
 
         avg_loss = total_loss / max(1, num_batches)
 
-        preds_all = torch.cat(all_preds, dim=0).numpy()          # (N, H)
-        labels_all = torch.cat(all_labels, dim=0).numpy()        # (N, H)
-        pattern_idx_all = torch.cat(all_pattern_idx, dim=0).numpy()  # (N,)
-        ratio_idx_all = torch.cat(all_ratio_idx, dim=0).numpy()      # (N,)
+        preds_all = torch.cat(all_preds, dim=0).numpy()
+        labels_all = torch.cat(all_labels, dim=0).numpy()
+        pattern_idx_all = torch.cat(all_pattern_idx, dim=0).numpy()
+        ratio_idx_all = torch.cat(all_ratio_idx, dim=0).numpy()
 
         return avg_loss, preds_all, labels_all, pattern_idx_all, ratio_idx_all
-
-
-
-    def run_epoch(
-        self,
-        loader: DataLoader,
-        optimizer: torch.optim.Optimizer | None,
-        split: Split,
-
-    ):
-        is_train = (split == Split.TRAIN)
-        self.model.train() if is_train else self.model.eval()
-
-
-        desc = f"[{self.config.model.model.name} {split.name}]"
-
-        total_loss = 0.0
-        num_batches = 0
-
-        for batch in tqdm(loader, desc=desc):
-            x, y, x_ori, bemv, _, _ = self._prepare_batch(batch)
-
-            clean_bemv = torch.ones_like(bemv)
-
-            with torch.set_grad_enabled(is_train):
-                out1 = self.model(x, bemv)
-                out2 = self.model(x_ori, clean_bemv)
-
-                z_masked = out1["latent"]
-                z_clean = out2["latent"]
-
-                info_loss = info_nce_loss(
-                    z_clean,
-                    z_masked,
-                    self.config.train.temperature
-                )
-
-                recon1 = out1["recon"]
-                recon2 = out2["recon"]
-
-                recon_loss = F.mse_loss(recon1, x_ori) + F.mse_loss(recon2, x_ori)
-
-
-                logits = out1["logits"]
-
-                B, H, C = logits.shape
-                logits_flat = logits.reshape(B * H, C)
-                y_flat = y.reshape(B * H)
-
-                ce_loss = F.cross_entropy(logits_flat, y_flat)
-
-                loss = ce_loss + info_loss + recon_loss
-
-
-                if is_train:
-                    optimizer.zero_grad()
-                    loss.backward()
-                    optimizer.step()
-
-            num_batches += 1
-            total_loss += loss.item()
-
-        return total_loss / num_batches
-
-
 
     def _prepare_batch(
         self,
@@ -299,27 +320,25 @@ class MDBE_3_E2E_Adapter(BaseModelAdapter):
 
         return x, y, x_ori, bemv, pattern_idx, ratio_idx
 
+    def _flatten_x(self, x: torch.Tensor) -> torch.Tensor:
+        B = x.size(0)
+        x_flat = x.view(B, -1)
+        return x_flat
 
     def _get_model(
         self,
         input_dim: int,
-        num_class: int,
-    ):
-        model = HybridDoubleBranchEncoder(
+        num_class: int | None,
+    ) -> ResMLPBackbone:
+        if num_class is None:
+            raise ValueError("num_class가 설정되지 않았습니다.")
+
+        model = ResMLPBackbone(
             input_dim=input_dim,
-            embed_dim=self.config.params.embed_dim,
-            feature_hidden_dims=self.config.params.feature_hidden_dims,
             num_class=num_class,
-            nhead=self.config.params.nhead,
-            transformer_layers=self.config.params.transformer_layers,
-            decoder_hidden_dim=self.config.params.decoder_hidden_dim,
-            total_layer=self.config.params.total_layer,
-            horizon=self.horizon,
         ).to(self.device)
+
         return model
-
-
-
 
     def save(
         self,
@@ -336,16 +355,14 @@ class MDBE_3_E2E_Adapter(BaseModelAdapter):
 
         meta = {
             "feature_dim": self.feature_dim,
+            "input_dim": self.input_dim,
             "num_class": self.num_class,
             "model_path": str(model_path),
-            "horizon": self.horizon,
         }
 
         self.save_meta(save_dir, meta)
 
         return model_path
-
-
 
     def load(
         self,
@@ -353,16 +370,18 @@ class MDBE_3_E2E_Adapter(BaseModelAdapter):
     ):
         save_dir = path / Split.TRAIN.value / "save"
         meta = self.load_meta(save_dir)
-        feature_dim = int(meta["feature_dim"])
-        num_class = int(meta["num_class"])
+
+        self.feature_dim = int(meta["feature_dim"])
+        self.input_dim = int(meta["input_dim"])
+        self.num_class = int(meta["num_class"])
+
         model_path = Path(meta["model_path"])
-        self.horizon = int(meta["horizon"])
-        self.feature_dim = feature_dim
-        self.num_class = num_class
-        self.device = self.config.train.device
-        self.model = self._get_model(feature_dim, num_class)
+
+        self.model = self._get_model(self.input_dim, self.num_class)
+
         state = torch.load(model_path, map_location=self.device)
         self.model.load_state_dict(state)
         self.model.to(self.device)
         self.model.eval()
+
         return True

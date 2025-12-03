@@ -4,13 +4,14 @@ import numpy as np
 from pathlib import Path
 
 from sklearn.ensemble import RandomForestClassifier
+from sklearn.utils.class_weight import compute_class_weight
 import joblib
 
 from src.configs.configs import Config
 from src.params.data_model import Split
 from src.models.base_model_adapter import BaseModelAdapter
 from src.datasets.data_class import Datasets
-from src.utils.metrics import compute_multitask_classification_metrics
+from src.utils.metrics import compute_classification_metrics
 
 
 class RandomForestAdapter(BaseModelAdapter):
@@ -19,21 +20,8 @@ class RandomForestAdapter(BaseModelAdapter):
         config: Config,
     ):
         super().__init__(config)
-        self.models: list[RandomForestClassifier] | None = None
-        self.horizon: int | None = None
-
-    def _prepare_xy(
-        self,
-        X: np.ndarray,
-        y: np.ndarray,
-    ):
-        """
-        CPU RandomForest용 전처리:
-        - 그냥 numpy array로만 맞춰줌
-        """
-        X_out = np.asarray(X)
-        y_out = np.asarray(y)
-        return X_out, y_out
+        # 단일 분류 모델
+        self.model: RandomForestClassifier | None = None
 
     def fit(
         self,
@@ -42,78 +30,80 @@ class RandomForestAdapter(BaseModelAdapter):
     ):
         """
         - train_data.get_data_for_gbdt() -> (X, y)
-          X: (N, F), y: (N, T) (T = horizon)
-        - 타임스텝별로 RF 하나씩 총 horizon 개 학습
+          X: (N, F), y: (N,)
+        - warm_start 없이 한 번에 RandomForest 학습
+        - loss history는 train / valid accuracy 한 점씩만 기록
         """
+        # X: (N, F), y: (N,)
         X_tr, y_tr = train_data.get_data_for_gbdt()
         X_val, y_val = valid_data.get_data_for_gbdt()
 
-        X_tr, y_tr = self._prepare_xy(X_tr, y_tr)
-        X_val, y_val = self._prepare_xy(X_val, y_val)
+        X_tr = np.asarray(X_tr)
+        y_tr = np.asarray(y_tr)
+        X_val = np.asarray(X_val)
+        y_val = np.asarray(y_val)
 
-        horizon = train_data.get_horizon()
-        self.horizon = horizon
         num_class = train_data.get_num_class()
-
-        print(f"[RandomForestAdapter] horizon: {horizon}, num_class: {num_class}")
+        print(f"[RandomForestAdapter] num_class (from meta): {num_class}")
 
         num_class_from_y = int(max(y_tr.max(), y_val.max()) + 1)
         print(f"[RandomForestAdapter] num_class_from_y: {num_class_from_y}")
 
         # === 하이퍼파라미터 설정 ===
-        # 트리 개수 = epochs
-        n_estimators = self.config.train.epochs
-        # CPU 병렬 처리 개수 = data.num_workers
+        # 여기서 epochs는 "학습 반복"이 아니라 "트리 개수"로 해석됨
+        n_estimators = int(self.config.train.epochs)
+        if n_estimators <= 0:
+            raise ValueError("RandomForestAdapter: config.train.epochs 는 1 이상이어야 합니다.")
+
         n_jobs = self.config.data.num_workers
-        # 클래스 불균형 대응: balanced
-        class_weight = self.config.model.lgbm_class_weight
+        class_weight_cfg = self.config.model.lgbm_class_weight  # None, "balanced", dict 등
+
+        # "balanced" / "balanced_subsample"이면 직접 weight dict 계산
+        if class_weight_cfg in ("balanced", "balanced_subsample"):
+            classes = np.unique(y_tr)
+            weights = compute_class_weight(
+                class_weight="balanced",
+                classes=classes,
+                y=y_tr,
+            )
+            class_weight = {int(c): float(w) for c, w in zip(classes, weights)}
+        else:
+            # None 이나 dict 는 그대로 사용
+            class_weight = class_weight_cfg
 
         print(
             "[RandomForestAdapter] "
             f"n_estimators={n_estimators}, class_weight={class_weight}, n_jobs={n_jobs}"
         )
 
-        self.models = []
-        loss_tasks: list[dict] = []
-        train_pred_list: list[np.ndarray] = []
-        valid_pred_list: list[np.ndarray] = []
+        # warm_start 사용하지 않음
+        rf = RandomForestClassifier(
+            n_estimators=n_estimators,
+            n_jobs=n_jobs,
+            random_state=self.config.train.seed,
+            class_weight=class_weight,
+        )
 
-        for t in range(horizon):
-            print(f"[RandomForestAdapter] training horizon step {t} / {horizon - 1}")
+        rf.fit(X_tr, y_tr)
+        self.model = rf
 
-            rf = RandomForestClassifier(
-                n_estimators=n_estimators,
-                n_jobs=n_jobs,
-                random_state=self.config.train.seed,
-                class_weight=class_weight,
-            )
+        # 최종 모델 기준 성능
+        y_tr_pred = rf.predict(X_tr)   # (N,)
+        y_val_pred = rf.predict(X_val) # (N,)
 
-            rf.fit(X_tr, y_tr[:, t])
+        train_acc = float(np.mean(y_tr == y_tr_pred))
+        valid_acc = float(np.mean(y_val == y_val_pred))
 
-            self.models.append(rf)
+        # history는 한 점짜리 curve
+        loss_tasks = [
+            {
+                Split.TRAIN.value: [train_acc],
+                Split.VALID.value: [valid_acc],
+            }
+        ]
 
-            y_tr_pred_t = rf.predict(X_tr)
-            y_val_pred_t = rf.predict(X_val)
-
-            # 간단히 accuracy를 loss 로그 형태로 저장
-            train_acc = float(np.mean(y_tr[:, t] == y_tr_pred_t))
-            valid_acc = float(np.mean(y_val[:, t] == y_val_pred_t))
-
-            loss_tasks.append(
-                {
-                    Split.TRAIN.value: [train_acc],
-                    Split.VALID.value: [valid_acc],
-                }
-            )
-
-            train_pred_list.append(y_tr_pred_t)
-            valid_pred_list.append(y_val_pred_t)
-
-        y_tr_pred = np.stack(train_pred_list, axis=1)
-        y_val_pred = np.stack(valid_pred_list, axis=1)
-
-        train_metrics = compute_multitask_classification_metrics(y_tr, y_tr_pred)
-        valid_metrics = compute_multitask_classification_metrics(y_val, y_val_pred)
+        train_metrics = compute_classification_metrics(y_tr, y_tr_pred)
+        valid_metrics = compute_classification_metrics(y_val, y_val_pred)
 
         results = {
             "split": Split.TRAIN.value,
@@ -131,32 +121,31 @@ class RandomForestAdapter(BaseModelAdapter):
         self,
         X: np.ndarray,
     ) -> np.ndarray:
-        if self.models is None:
+        if self.model is None:
             raise ValueError("모델이 학습되거나 로드되지 않았습니다.")
 
         X_in = np.asarray(X)
-
-        preds: list[np.ndarray] = []
-        for rf in self.models:
-            y_hat = rf.predict(X_in)
-            preds.append(y_hat)
-
-        y_pred = np.stack(preds, axis=1)
+        y_pred = self.model.predict(X_in)  # (N,)
         return y_pred
 
     def test(
         self,
         test_data: Datasets,
     ):
-        X_all, y_all = test_data.get_data_for_gbdt()
+        if self.model is None:
+            raise ValueError("모델이 학습되거나 로드되지 않았습니다.")
+
+        # 전체 테스트 데이터 기준 성능
+        X_all, y_all = test_data.get_data_for_gbdt()   # (N, F), (N,)
         X_all = np.asarray(X_all)
         y_all = np.asarray(y_all)
 
-        y_pred_all = self.predict(X_all)
+        y_pred_all = self.model.predict(X_all)         # (N,)
 
-        metrics_overall = compute_multitask_classification_metrics(y_all, y_pred_all)
+        metrics_overall = compute_classification_metrics(y_all, y_pred_all)
 
-        by_ratio: dict = {}
+        # 패턴 / ratio 별 성능
+        by_ratio: dict[str, dict[float, dict]] = {}
 
         for pattern in self.config.data.missing_patterns:
             p_v = pattern.value
@@ -167,16 +156,15 @@ class RandomForestAdapter(BaseModelAdapter):
             for ratio in test_data.ratios:
                 d = ratio_dict[ratio]
 
-                X = d["X"]
-                y = d["y"]
+                X = d["X"]  # (N, F)
+                y = d["y"]  # (N,)
 
-                X_flat = test_data.get_flat_2d(X)
-                X_flat = np.asarray(X_flat)
+                X = np.asarray(X)
                 y = np.asarray(y)
 
-                y_pred = self.predict(X_flat)
+                y_pred = self.model.predict(X)  # (N,)
 
-                m = compute_multitask_classification_metrics(y, y_pred)
+                m = compute_classification_metrics(y, y_pred)
                 by_ratio[p_v][ratio] = m
 
         results = {
@@ -192,24 +180,21 @@ class RandomForestAdapter(BaseModelAdapter):
         path: Path,
     ):
         """
-        LightGBMAdapter / XGBoostAdapter와 동일한 구조:
-        - path / "save" 하위에 모델들과 meta 저장
+        XGBoostAdapter 와 동일한 구조:
+        - path / "save" 하위에 모델과 meta 저장
         """
+        if self.model is None:
+            raise ValueError("저장할 모델이 없습니다.")
+
         save_dir = path / "save"
         save_dir.mkdir(parents=True, exist_ok=True)
 
+        model_path = save_dir / "rf_model.pkl"
+        joblib.dump(self.model, model_path)
+
         meta = {
-            "horizon": self.horizon,
+            "model_path": str(model_path),
         }
-
-        save_model_dirs: list[str] = []
-
-        for t, rf in enumerate(self.models):
-            model_path = save_dir / f"rf_horizon_{t}.pkl"
-            joblib.dump(rf, model_path)
-            save_model_dirs.append(str(model_path))
-
-            meta["save_model_dirs"] = save_model_dirs
 
         self.save_meta(save_dir, meta)
 
@@ -218,21 +203,15 @@ class RandomForestAdapter(BaseModelAdapter):
         path: Path,
     ):
         """
-        LightGBMAdapter.load와 동일한 규칙:
         - 학습 시 save(path / Split.TRAIN.value)를 호출했다고 가정
         - 로드시에는 work_dir / "train" / "save"에서 읽기
         """
         save_dir = path / Split.TRAIN.value / "save"
         meta = self.load_meta(save_dir)
 
-        save_model_dirs = meta["save_model_dirs"]
+        model_path = meta["model_path"]
 
-        self.models = []
+        rf = joblib.load(model_path)
+        self.model = rf
 
-        for model_dir in save_model_dirs:
-            rf = joblib.load(model_dir)
-            self.models.append(rf)
-
-        self.horizon = meta["horizon"]
-
-        return len(self.models) == len(save_model_dirs) == self.horizon
+        return True
