@@ -1,3 +1,5 @@
+# src/models/tabpfn_adapter.py
+
 import torch
 import numpy as np
 from pathlib import Path
@@ -26,17 +28,19 @@ class TabPFNAdapter(BaseModelAdapter):
         X_tr, y_tr = train_data.get_data_for_gbdt()
         X_val, y_val = valid_data.get_data_for_gbdt()
 
-        # TabPFN은 학습 단계(Epoch)가 없으므로 config의 epoch 설정은 무시됩니다.
+        if len(X_tr) > 50000:
+            indices = np.random.choice(len(X_tr), 50000, replace=False)
+            X_tr = X_tr[indices]
+            y_tr = y_tr[indices]
+
         self.model = TabPFNClassifier(
             device=self.config.train.device,
-            seed=self.config.train.seed,
+            random_state=self.config.train.seed,
+            n_estimators=8,
         )
 
-        # TabPFN의 fit은 데이터를 저장하는 과정이므로 즉시 완료됨
         self.model.fit(X_tr, y_tr)
 
-        # 학습 곡선이 없으므로, 최종 Loss만 계산하여 리스트로 반환 (인터페이스 호환용)
-        # predict_proba를 사용하여 log_loss 계산
         tr_proba = self.model.predict_proba(X_tr)
         val_proba = self.model.predict_proba(X_val)
 
@@ -50,7 +54,6 @@ class TabPFNAdapter(BaseModelAdapter):
             }
         ]
 
-        # 최종 성능 계산
         y_tr_pred = self.model.predict(X_tr)
         y_val_pred = self.model.predict(X_val)
 
@@ -126,11 +129,10 @@ class TabPFNAdapter(BaseModelAdapter):
         save_dir = path / "save"
         save_dir.mkdir(parents=True, exist_ok=True)
 
-        # TabPFN은 sklearn estimator이므로 pickle/torch.save로 전체 객체 저장
-        model_name = "tabpfn_model.pt"
+        model_name = "tabpfn_model.pfz"
         save_path = save_dir / model_name
 
-        torch.save(self.model, save_path)
+        self.model.save_fit_state(str(save_path))
 
         meta = {
             "model_path": str(save_path),
@@ -148,6 +150,9 @@ class TabPFNAdapter(BaseModelAdapter):
 
         model_path = meta["model_path"]
 
-        self.model = torch.load(model_path)
+        self.model = TabPFNClassifier.load_from_fit_state(
+            str(model_path),
+            device=self.config.train.device
+        )
 
         return True

@@ -1,7 +1,8 @@
 # scripts/run.py
 
 import argparse
-
+import os
+import yaml
 from src.configs.configs import Config
 from src.trainer.trainer import Trainer
 from src.params.data_model import Split
@@ -29,11 +30,22 @@ def main(config: Config):
     print(f"[{args.mode}] Results are saved in: {results_dir}")
 
 
+def read_token_and_os_export():
+    with open("src/configs/token.yaml", 'r') as f:
+        token_config = yaml.safe_load(f)
+    hf_token = token_config.get("hf_token", "")
+    if hf_token:
+        os.environ["HF_TOKEN"] = hf_token
+        print("[Token] HF_TOKEN environment variable set.")
+    else:
+        print("[Token] No HF_TOKEN found in token.yaml.")
+
 if __name__ == "__main__":
     #todo: yaml로 파싱해서 불러오는거 해야함
     config = build_config()
     # 시드 고정 확실히 됨
     set_seeds(config.train.seed)
+    read_token_and_os_export()
     main(config)
 
 

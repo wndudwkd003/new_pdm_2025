@@ -1,3 +1,5 @@
+# src/models/deeptlf_adapter.py
+
 import torch
 import numpy as np
 from pathlib import Path
@@ -25,12 +27,19 @@ class DeepTLFAdapter(BaseModelAdapter):
         X_tr, y_tr = train_data.get_data_for_gbdt()
         X_val, y_val = valid_data.get_data_for_gbdt()
 
+
         self.model = DeepTFL(
             task='class',
-            random_state=self.config.train.seed
+            n_epoch=self.config.train.epochs,
+            batch_size=self.config.train.batch_size,
         )
 
-        self.model.fit(X_tr, y_tr)
+        self.model.fit(
+            X_train=X_tr,
+            y_train=y_tr,
+            X_val=X_val,
+            y_val=y_val
+        )
 
         loss_tasks = [
             {
@@ -135,6 +144,8 @@ class DeepTLFAdapter(BaseModelAdapter):
 
         model_path = meta["model_path"]
 
+        # 전체 객체 로드
         self.model = torch.load(model_path)
+
 
         return True
