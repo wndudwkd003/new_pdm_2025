@@ -3,6 +3,8 @@ datasets/*/processed_data/
 outputs_seeds/
 outputs/
 outputs_auto_run/
+outputs_seeds_total/
+agg_viz_json/
 src/configs/token.yaml
 *.pyc
 

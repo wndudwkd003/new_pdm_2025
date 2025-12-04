@@ -2,6 +2,7 @@
 
 import sys
 import json
+import csv
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List
@@ -10,30 +11,27 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 # 기존 agg_seeds.py 에 정의된 함수들을 재사용
-from scripts.agg_seeds import (
-    RunMetrics,
-    load_results,
-    aggregate_all,
-    _set_ylim_from_values,
-    _parse_signature,
-)
+from scripts.agg_seeds import _set_ylim_from_values
 
 
 @dataclass
 class ModelSeedAgg:
     """
-    한 모델(AUTO JSON 하나)에 대해:
-      - run_dirs: seed 별 run 디렉토리 리스트
-      - agg_overall: aggregate_all()['agg_overall']
-      - agg_by_ratio: aggregate_all()['agg_by_ratio']
-    를 묶어서 보관.
+    한 모델(= outputs_seeds/.../test_k 디렉터리 하나)에 대해:
+      - dir: metrics_by_ratio_*.csv 가 들어있는 디렉터리
+      - ratios: missing ratio 리스트 (float, 정렬된 상태)
+      - metrics: 메트릭별 곡선 정보
+        metrics[metric_name] = {
+          "means": np.ndarray(shape=[num_ratios]),
+          "mins":  np.ndarray(shape=[num_ratios]),
+          "maxs":  np.ndarray(shape=[num_ratios]),
+        }
     """
     label: str
-    auto_json: Path
-    test_index: int        # ← 이 줄 추가
-    run_dirs: List[Path]
-    agg_overall: Dict
-    agg_by_ratio: Dict
+    dir: Path
+    ratios: List[float]
+    metrics: Dict[str, Dict[str, np.ndarray]]
+
 
 
 def _parse_total_config(cfg: Dict) -> List[Dict]:
@@ -44,72 +42,140 @@ def _parse_total_config(cfg: Dict) -> List[Dict]:
       "models": [
         {
           "label": "XGBoost",
-          "auto_json": "...xgboost..._auto.json",
-          "test": 0
+          "dir": "outputs_seeds/.../test_1"
         },
         {
           "label": "LightGBM",
-          "auto_json": "...lightgbm..._auto.json",
-          "test": 1
+          "dir": "outputs_seeds/.../test_0"
         }
       ]
     }
 
-    또는 (옛 방식 호환):
-
-    {
-      "0": "...xgboost..._auto.json",
-      "1": "...lightgbm..._auto.json"
-    }
-
     반환 형식:
       [
-        {"label": "XGBoost", "auto_json": "...", "test_index": 0},
-        {"label": "LightGBM", "auto_json": "...", "test_index": 1},
+        {"label": "XGBoost", "dir": "..." },
+        {"label": "LightGBM", "dir": "..." },
         ...
       ]
     """
+    if "models" not in cfg:
+        raise ValueError("total json 에 'models' 항목이 없습니다.")
+
     models: List[Dict] = []
+    raw_models = cfg["models"]
 
-    if "models" in cfg:
-        raw_models = cfg["models"]
-        for idx, m in enumerate(raw_models):
-            auto_json = m.get("auto_json") or m.get("path")
-            if auto_json is None:
-                raise ValueError(f"models[{idx}] 에 auto_json/path 항목이 없습니다.")
+    for idx, m in enumerate(raw_models):
+        dir_str = m.get("dir")
+        if dir_str is None:
+            raise ValueError(f"models[{idx}] 에 dir 항목이 없습니다.")
 
-            label = m.get("label") or m.get("name") or str(idx)
+        label = m.get("label") or m.get("name") or f"model_{idx}"
 
-            # 각 모델별 test 인덱스 (없으면 0으로 기본값)
-            if "test" in m:
-                test_index = int(m["test"])
-            else:
-                test_index = 0
-
-            models.append(
-                {
-                    "label": str(label),
-                    "auto_json": auto_json,
-                    "test_index": test_index,
-                }
-            )
-    else:
-        # 옛날 단순 매핑 방식: test_index 는 0으로 통일
-        keys = sorted(cfg.keys(), key=str)
-        for k in keys:
-            auto_json = cfg[k]
-            models.append(
-                {
-                    "label": str(k),
-                    "auto_json": auto_json,
-                    "test_index": 0,
-                }
-            )
+        models.append(
+            {
+                "label": str(label),
+                "dir": dir_str,
+            }
+        )
 
     if len(models) == 0:
         raise ValueError("통합 JSON 안에 모델 정보가 없습니다.")
 
     return models
+
+
+def _load_model_from_dir(label: str, dir_path: Path) -> ModelSeedAgg:
+    """
+    dir_path:
+      outputs_seeds/.../test_k 디렉터리
+      내부에 metrics_by_ratio_seeds.csv 가 있다고 가정.
+
+    CSV 형식 (metrics_by_ratio_seeds.csv):
+      메트릭,시드,0.0,0.1,0.2,...,0.9
+
+    여기서 metric별, ratio별로 모든 seed 값들을 모아서
+    mean / min / max 를 계산.
+    """
+    seeds_csv = dir_path / "metrics_by_ratio_seeds.csv"
+    if not seeds_csv.exists():
+        raise FileNotFoundError(f"{seeds_csv} 파일이 없습니다.")
+
+    with open(seeds_csv, "r", encoding="utf-8") as f:
+        reader = csv.reader(f)
+        try:
+            header = next(reader)
+        except StopIteration:
+            raise ValueError(f"{seeds_csv} 가 비어 있습니다.")
+
+        if len(header) < 3:
+            raise ValueError(f"{seeds_csv} 헤더 형식이 잘못되었습니다: {header}")
+
+        # header: ["메트릭", "시드", "0.0", "0.1", ...]
+        ratio_labels = header[2:]
+        ratios: List[float] = [float(r) for r in ratio_labels]
+        num_ratios = len(ratios)
+
+        # metrics_values[metric][ratio_idx] = [seed1_value, seed2_value, ...]
+        metrics_values: Dict[str, List[List[float]]] = {}
+
+        for row in reader:
+            if not row or len(row) < 2:
+                continue
+
+            metric_name = row[0]
+            if metric_name == "":
+                continue
+
+            if metric_name not in metrics_values:
+                metrics_values[metric_name] = [[] for _ in range(num_ratios)]
+
+            values = row[2:]
+            # 부족한 칼럼이 있으면 빈 문자열로 채워진 상태일 수 있음
+            if len(values) < num_ratios:
+                values = values + [""] * (num_ratios - len(values))
+
+            for i in range(num_ratios):
+                cell = values[i]
+                if cell == "":
+                    continue
+                v = float(cell)
+                metrics_values[metric_name][i].append(v)
+
+    # metric별 mean/min/max 계산
+    metrics: Dict[str, Dict[str, np.ndarray]] = {}
+
+    for metric_name, per_ratio_lists in metrics_values.items():
+        means: List[float] = []
+        mins: List[float] = []
+        maxs: List[float] = []
+
+        for vals in per_ratio_lists:
+            arr = np.asarray(vals, dtype=float)
+            if arr.size == 0:
+                # 해당 ratio에서 값이 하나도 없으면 NaN 넣어둠
+                means.append(float("nan"))
+                mins.append(float("nan"))
+                maxs.append(float("nan"))
+            else:
+                means.append(float(arr.mean()))
+                mins.append(float(arr.min()))
+                maxs.append(float(arr.max()))
+
+        metrics[metric_name] = {
+            "means": np.asarray(means, dtype=float),
+            "mins":  np.asarray(mins, dtype=float),
+            "maxs":  np.asarray(maxs, dtype=float),
+        }
+
+    return ModelSeedAgg(
+        label=label,
+        dir=dir_path,
+        ratios=ratios,
+        metrics=metrics,
+    )
+
+
+
 
 def _make_total_output_dir(total_json_path: Path) -> Path:
     """
@@ -134,7 +200,7 @@ def _save_total_json(
     total_json_path: Path,
 ):
     """
-    통합 seed-aggregation 결과 전체를 JSON 하나로 저장.
+    통합 결과를 JSON 하나로 저장.
     """
     payload: Dict = {
         "total_config": str(total_json_path),
@@ -142,14 +208,20 @@ def _save_total_json(
     }
 
     for m in models_agg:
+        metrics_serialized: Dict[str, Dict[str, List[float]]] = {}
+        for metric_name, stats in m.metrics.items():
+            metrics_serialized[metric_name] = {
+                "means": stats["means"].tolist(),
+                "mins":  stats["mins"].tolist(),
+                "maxs":  stats["maxs"].tolist(),
+            }
+
         payload["models"].append(
             {
                 "label": m.label,
-                "auto_json": str(m.auto_json),
-                "test_index": int(m.test_index),   # ← test_index 추가
-                "run_dirs": [str(p) for p in m.run_dirs],
-                "agg_overall": m.agg_overall,
-                "agg_by_ratio": m.agg_by_ratio,
+                "dir": str(m.dir),
+                "ratios": m.ratios,
+                "metrics": metrics_serialized,
             }
         )
 
@@ -159,54 +231,43 @@ def _save_total_json(
 
 
 
+
+
 def _check_compatibility(models_agg: List[ModelSeedAgg]):
     """
-    여러 모델이 모두 동일한 pattern / ratio / metric 세트를 가지고 있는지 확인.
+    여러 모델이 모두 동일한 ratio / metric 세트를 가지고 있는지 확인.
     다르면 그래프 비교가 의미가 없으므로 에러를 냅니다.
     """
     if len(models_agg) == 0:
         return
 
     base = models_agg[0]
+    base_ratios = base.ratios
+    base_metrics = sorted(base.metrics.keys())
 
-    # pattern 세트 비교
-    base_patterns = sorted(base.agg_by_ratio.keys())
     for m in models_agg[1:]:
-        patterns = sorted(m.agg_by_ratio.keys())
-        if patterns != base_patterns:
+        # ratio 비교 (길이 + 값)
+        if len(m.ratios) != len(base_ratios):
             raise ValueError(
-                f"모델 '{base.label}' 과(와) '{m.label}' 의 pattern 목록이 다릅니다. "
-                f"{base_patterns} vs {patterns}"
+                f"모델 '{base.label}' 과(와) '{m.label}' 의 ratio 개수가 다릅니다. "
+                f"{len(base_ratios)} vs {len(m.ratios)}"
             )
-
-    # 각 pattern별 ratio / metric 세트 비교
-    for pattern in base_patterns:
-        base_ratios = sorted(base.agg_by_ratio[pattern].keys(), key=float)
-
-        for m in models_agg[1:]:
-            ratios = sorted(m.agg_by_ratio[pattern].keys(), key=float)
-            if ratios != base_ratios:
+        for a, b in zip(base_ratios, m.ratios):
+            if abs(a - b) > 1e-9:
                 raise ValueError(
-                    f"pattern '{pattern}' 에서 모델 '{base.label}' 과(와) '{m.label}' 의 "
-                    f"ratio 목록이 다릅니다. {base_ratios} vs {ratios}"
+                    f"모델 '{base.label}' 과(와) '{m.label}' 의 ratio 값이 다릅니다. "
+                    f"{base_ratios} vs {m.ratios}"
                 )
 
         # metric key 세트 비교
-        first_ratio = base_ratios[0]
-        base_metrics = sorted(
-            base.agg_by_ratio[pattern][first_ratio]["scalars"].keys()
-        )
-
-        for m in models_agg[1:]:
-            metrics = sorted(
-                m.agg_by_ratio[pattern][first_ratio]["scalars"].keys()
+        metrics = sorted(m.metrics.keys())
+        if metrics != base_metrics:
+            raise ValueError(
+                f"모델 '{base.label}' 과(와) '{m.label}' 의 metric 목록이 다릅니다. "
+                f"{base_metrics} vs {metrics}"
             )
-            if metrics != base_metrics:
-                raise ValueError(
-                    f"pattern '{pattern}', ratio='{first_ratio}' 에서 "
-                    f"모델 '{base.label}' 과(와) '{m.label}' 의 metric 목록이 다릅니다. "
-                    f"{base_metrics} vs {metrics}"
-                )
+
+
 
 
 def plot_ratio_curves_multi(
@@ -214,7 +275,7 @@ def plot_ratio_curves_multi(
     out_dir: Path,
 ):
     """
-    여러 모델에 대해, pattern/ratio 별 scalar metric 을 한 그래프에 그립니다.
+    여러 모델에 대해, ratio 별 scalar metric 을 한 그래프에 그립니다.
 
     - x축: missing ratio
     - 각 모델: mean (seed 평균)을 선으로 그림
@@ -226,133 +287,80 @@ def plot_ratio_curves_multi(
     if len(models_agg) == 0:
         return
 
-    # 호환성 검사 (pattern/ratio/metric 동일 여부)
+    # 호환성 검사 (ratio / metric 동일 여부)
     _check_compatibility(models_agg)
 
-    # 기준 모델
     base = models_agg[0]
-    patterns = sorted(base.agg_by_ratio.keys())
+    ratios_arr = np.asarray(base.ratios, dtype=float)
+    metric_keys = sorted(base.metrics.keys())
 
-    ratio_dir = out_dir / "by_ratio"
-    ratio_dir.mkdir(parents=True, exist_ok=True)
+    viz_dir = out_dir / "by_ratio"
+    viz_dir.mkdir(parents=True, exist_ok=True)
 
-    for pattern in patterns:
-        pattern_dir = ratio_dir / f"pattern_{pattern}"
-        pattern_dir.mkdir(parents=True, exist_ok=True)
+    for metric_key in metric_keys:
+        all_values_for_zoom: List[float] = []
 
-        ratio_keys = sorted(base.agg_by_ratio[pattern].keys(), key=float)
-        first_ratio = ratio_keys[0]
+        # ---------------------------
+        # 1) y축 0~1 고정 버전
+        # ---------------------------
+        plt.figure(figsize=(6, 4))
 
-        metric_keys = sorted(
-            base.agg_by_ratio[pattern][first_ratio]["scalars"].keys()
-        )
+        for m in models_agg:
+            stats = m.metrics[metric_key]
+            means_arr = stats["means"]
+            mins_arr = stats["mins"]
+            maxs_arr = stats["maxs"]
 
-        xs_arr = np.asarray([float(rk) for rk in ratio_keys], dtype=float)
+            line, = plt.plot(ratios_arr, means_arr, marker="o", label=m.label)
+            color = line.get_color()
+            plt.fill_between(ratios_arr, mins_arr, maxs_arr, alpha=0.15, color=color)
 
-        for metric_key in metric_keys:
-            # 각 모델별로 ratio→(mean/min/max, 전체 값) 수집
-            per_model_stats = []
-            all_values_for_zoom: List[float] = []
+            all_values_for_zoom.extend(means_arr.tolist())
+            all_values_for_zoom.extend(mins_arr.tolist())
+            all_values_for_zoom.extend(maxs_arr.tolist())
 
-            for m in models_agg:
-                means: List[float] = []
-                mins: List[float] = []
-                maxs: List[float] = []
-                vals_all: List[float] = []
+        plt.xlabel("missing ratio")
+        plt.ylabel(metric_key)
+        plt.title(f"{metric_key} vs missing ratio (fixed 0-1, multi-model)")
+        plt.grid(True, linestyle="--", alpha=0.5)
+        plt.ylim(0.0, 1.0)
+        plt.legend()
+        plt.tight_layout()
 
-                for rk in ratio_keys:
-                    scalars = m.agg_by_ratio[pattern][rk]["scalars"]
-                    if metric_key not in scalars:
-                        raise ValueError(
-                            f"모델 '{m.label}' 의 pattern='{pattern}', ratio='{rk}' 에 "
-                            f"metric '{metric_key}' 가 없습니다."
-                        )
+        fname_fixed = f"{metric_key}_ratio_fixed01_multi.png"
+        plt.savefig(viz_dir / fname_fixed, dpi=150)
+        plt.close()
 
-                    s = scalars[metric_key]
-                    vals = np.asarray(s["values"], dtype=float)
+        # ---------------------------
+        # 2) zoom 버전
+        # ---------------------------
+        plt.figure(figsize=(6, 4))
 
-                    if vals.size == 0:
-                        raise ValueError(
-                            f"모델 '{m.label}' 의 pattern='{pattern}', ratio='{rk}', "
-                            f"metric='{metric_key}' 의 values 가 비어 있습니다."
-                        )
+        for m in models_agg:
+            stats = m.metrics[metric_key]
+            means_arr = stats["means"]
+            mins_arr = stats["mins"]
+            maxs_arr = stats["maxs"]
 
-                    means.append(float(vals.mean()))
-                    mins.append(float(vals.min()))
-                    maxs.append(float(vals.max()))
-                    vals_all.extend(vals.tolist())
+            line, = plt.plot(ratios_arr, means_arr, marker="o", label=m.label)
+            color = line.get_color()
+            plt.fill_between(ratios_arr, mins_arr, maxs_arr, alpha=0.15, color=color)
 
-                means_arr = np.asarray(means, dtype=float)
-                mins_arr = np.asarray(mins, dtype=float)
-                maxs_arr = np.asarray(maxs, dtype=float)
+        plt.xlabel("missing ratio")
+        plt.ylabel(metric_key)
+        plt.title(f"{metric_key} vs missing ratio (zoom, multi-model)")
+        plt.grid(True, linestyle="--", alpha=0.5)
 
-                per_model_stats.append(
-                    {
-                        "label": m.label,
-                        "means": means_arr,
-                        "mins": mins_arr,
-                        "maxs": maxs_arr,
-                        "vals_all": vals_all,
-                    }
-                )
+        _set_ylim_from_values(all_values_for_zoom)
 
-                all_values_for_zoom.extend(vals_all)
+        plt.legend()
+        plt.tight_layout()
 
-            # ---------------------------
-            # 1) y축 0~1 고정 버전
-            # ---------------------------
-            plt.figure(figsize=(6, 4))
+        fname_zoom = f"{metric_key}_ratio_zoom_multi.png"
+        plt.savefig(viz_dir / fname_zoom, dpi=150)
+        plt.close()
 
-            for stats in per_model_stats:
-                label = stats["label"]
-                means_arr = stats["means"]
-                mins_arr = stats["mins"]
-                maxs_arr = stats["maxs"]
 
-                line, = plt.plot(xs_arr, means_arr, marker="o", label=label)
-                color = line.get_color()
-                plt.fill_between(xs_arr, mins_arr, maxs_arr, alpha=0.15, color=color)
-
-            plt.xlabel("missing ratio")
-            plt.ylabel(metric_key)
-            plt.title(f"{pattern} - {metric_key} vs missing ratio (fixed 0-1, multi-model)")
-            plt.grid(True, linestyle="--", alpha=0.5)
-            plt.ylim(0.0, 1.0)
-            plt.legend()
-            plt.tight_layout()
-
-            fname_fixed = f"{pattern}_ratio_{metric_key}_fixed01_multi.png"
-            plt.savefig(pattern_dir / fname_fixed, dpi=150)
-            plt.close()
-
-            # ---------------------------
-            # 2) zoom 버전
-            # ---------------------------
-            plt.figure(figsize=(6, 4))
-
-            for stats in per_model_stats:
-                label = stats["label"]
-                means_arr = stats["means"]
-                mins_arr = stats["mins"]
-                maxs_arr = stats["maxs"]
-
-                line, = plt.plot(xs_arr, means_arr, marker="o", label=label)
-                color = line.get_color()
-                plt.fill_between(xs_arr, mins_arr, maxs_arr, alpha=0.15, color=color)
-
-            plt.xlabel("missing ratio")
-            plt.ylabel(metric_key)
-            plt.title(f"{pattern} - {metric_key} vs missing ratio (zoom, multi-model)")
-            plt.grid(True, linestyle="--", alpha=0.5)
-
-            _set_ylim_from_values(all_values_for_zoom)
-
-            plt.legend()
-            plt.tight_layout()
-
-            fname_zoom = f"{pattern}_ratio_{metric_key}_zoom_multi.png"
-            plt.savefig(pattern_dir / fname_zoom, dpi=150)
-            plt.close()
 
 def main():
     """
@@ -381,47 +389,17 @@ def main():
     print("[agg_seeds_total] total json mode:")
     for mc in model_cfgs:
         label = mc["label"]
-        auto_json_path = Path(mc["auto_json"])
-        test_index = mc["test_index"]
+        dir_path = Path(mc["dir"])
 
-        print(f"  label={label}, auto_json={auto_json_path}, test_index={test_index}")
+        print(f"  label={label}, dir={dir_path}")
 
-        with open(auto_json_path, "r", encoding="utf-8") as f:
-            auto_cfg = json.load(f)
+        if not dir_path.exists():
+            raise FileNotFoundError(f"{dir_path} 디렉터리가 존재하지 않습니다.")
 
-        runs = auto_cfg.get("runs", [])
-        if len(runs) == 0:
-            raise ValueError(f"{auto_json_path} 안에 runs 항목이 비어 있습니다.")
-
-        run_dirs: List[Path] = []
-        for r in runs:
-            d = r.get("dir")
-            if d is None:
-                raise ValueError(f"{auto_json_path} 의 runs 항목에 dir 이 없습니다: {r}")
-            run_dirs.append(Path(d))
-
-        # seed별 metrics 로딩 (각 모델의 test_index 사용)
-        run_metrics: List[RunMetrics] = []
-        for rd in run_dirs:
-            rm = load_results(rd, test_index=test_index)
-            run_metrics.append(rm)
-
-        # seed aggregation (기존 aggregate_all 재사용)
-        agg = aggregate_all(run_metrics)
-
-        models_agg.append(
-            ModelSeedAgg(
-                label=label,
-                auto_json=auto_json_path,
-                test_index=test_index,         # ← 여기 추가
-                run_dirs=run_dirs,
-                agg_overall=agg["agg_overall"],
-                agg_by_ratio=agg["agg_by_ratio"],
-            )
-        )
+        model_agg = _load_model_from_dir(label, dir_path)
+        models_agg.append(model_agg)
 
     out_dir = _make_total_output_dir(total_json_path)
-
     print(f"[agg_seeds_total] output dir: {out_dir}")
 
     # 통합 JSON 저장
@@ -431,6 +409,7 @@ def main():
     plot_ratio_curves_multi(models_agg, out_dir)
 
 
-
 if __name__ == "__main__":
     main()
+
+

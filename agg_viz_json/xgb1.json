@@ -1,14 +1,12 @@
 {
   "models": [
     {
-      "label": "XGBoost",
-      "auto_json": "outputs_auto_run/2025-12-04_08-24-29_xgboost_0.0_to_0.0_0.0_step_single_mcar_zero_auto.json",
-      "test": 1
+      "label": "XGBoost NoAug/Z",
+      "dir": "outputs_seeds/2025-12-04_11-16-26_xgboost_0.0_to_0.0_0.0_step_single_mcar_zero/test_1"
     },
     {
-      "label": "LightGBM",
-      "auto_json": "outputs_auto_run/2025-12-04_08-31-10_lightgbm_0.0_to_0.0_0.0_step_single_mcar_zero_auto.json",
-      "test": 1
+      "label": "XGBoost RMAug/Z",
+      "dir": "outputs_seeds/2025-12-04_11-22-26_xgboost_0.0_to_0.9_0.1_step_multi_mcar_zero/test_0"
     }
   ]
 }
