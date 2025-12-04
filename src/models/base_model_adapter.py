@@ -111,3 +111,14 @@ class BaseModelAdapter(ABC):
         split: Split,
     ):
         return F"[{model_name} {split.name}]"
+
+
+    def get_epoch_message(
+        self,
+        model_name,
+        epoch,
+        train_loss,
+        valid_loss,
+        lr
+    ):
+        return f"[{model_name}][Epoch {epoch+1}] Train Loss: {train_loss:.4f} | Valid Loss: {valid_loss:.4f} | LR: {lr:.6f}"

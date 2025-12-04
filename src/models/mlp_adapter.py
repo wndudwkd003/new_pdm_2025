@@ -8,41 +8,13 @@ import numpy as np
 from pathlib import Path
 from tqdm.auto import tqdm
 
+from rtdl_revisiting_models import MLP  # ← 여기서 MLP를 가져와서 사용
+
 from src.configs.configs import Config
 from src.models.base_model_adapter import BaseModelAdapter
 from src.datasets.data_class import Datasets
 from src.utils.metrics import compute_classification_metrics
 from src.params.data_model import Split
-
-
-class MLPBackbone(nn.Module):
-    def __init__(
-        self,
-        input_dim: int,
-        num_class: int,
-        hidden_dims: list[int] | None = None,
-        dropout: float = 0.1,
-    ):
-        super().__init__()
-
-        if hidden_dims is None:
-            hidden_dims = [256, 256]
-
-        dims = [input_dim] + hidden_dims
-        layers: list[nn.Module] = []
-
-        for in_d, out_d in zip(dims[:-1], dims[1:]):
-            layers.append(nn.Linear(in_d, out_d))
-            layers.append(nn.ReLU())
-            layers.append(nn.Dropout(dropout))
-
-        self.mlp = nn.Sequential(*layers)
-        self.head = nn.Linear(hidden_dims[-1], num_class)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        h = self.mlp(x)
-        logits = self.head(h)
-        return logits
 
 
 class MLPAdapter(BaseModelAdapter):
@@ -52,11 +24,10 @@ class MLPAdapter(BaseModelAdapter):
     ):
         super().__init__(config)
 
-        self.model: MLPBackbone | None = None
+        self.model: MLP | None = None
         self.device = self.config.train.device
         self.train_mode = self.config.model.stage
 
-        self.feature_dim: int | None = None
         self.input_dim: int | None = None
         self.num_class: int | None = None
 
@@ -68,9 +39,8 @@ class MLPAdapter(BaseModelAdapter):
         tr_loader = train_data.get_loader_for_deep(shuffle=True)
         vl_loader = valid_data.get_loader_for_deep(shuffle=False)
 
-        self.feature_dim = int(train_data.meta.feature_dim)
-        self.num_class = int(train_data.meta.num_class)
-        self.input_dim = self.feature_dim
+        self.num_class =train_data.meta.num_class
+        self.input_dim = train_data.meta.input_dim
 
         self.model = self._get_model(self.input_dim, self.num_class)
 
@@ -101,12 +71,8 @@ class MLPAdapter(BaseModelAdapter):
 
             lr = float(optimizer.param_groups[0]["lr"])
 
-            print(
-                f"[{self.config.model.model.name} Epoch {epoch + 1}] "
-                f"Train Loss: {train_loss:.4f} | "
-                f"Valid Loss: {valid_loss:.4f} | "
-                f"LR: {lr:.6f}"
-            )
+            epoch_msg = self.get_epoch_message(self.config.model.model.name, epoch, train_loss, valid_loss, lr)
+            print(epoch_msg)
 
             lrs.append(lr)
             train_losses.append(train_loss)
@@ -170,7 +136,10 @@ class MLPAdapter(BaseModelAdapter):
         if self.model is None:
             raise ValueError("모델이 초기화되지 않았습니다.")
 
-        self.model.train() if is_train else self.model.eval()
+        if is_train:
+            self.model.train()
+        else:
+            self.model.eval()
 
         desc = self.get_desc(self.config.model.model.name, split)
 
@@ -306,13 +275,20 @@ class MLPAdapter(BaseModelAdapter):
         self,
         input_dim: int,
         num_class: int | None,
-    ) -> MLPBackbone:
+    ) -> MLP:
         if num_class is None:
             raise ValueError("num_class가 설정되지 않았습니다.")
 
-        model = MLPBackbone(
-            input_dim=input_dim,
-            num_class=num_class,
+        n_blocks = 4
+        d_block = 128
+        dropout = 0.1
+
+        model = MLP(
+            d_in=input_dim,
+            d_out=num_class,
+            n_blocks=n_blocks,
+            d_block=d_block,
+            dropout=dropout,
         ).to(self.device)
 
         return model
@@ -331,7 +307,6 @@ class MLPAdapter(BaseModelAdapter):
         torch.save(self.model.state_dict(), model_path)
 
         meta = {
-            "feature_dim": self.feature_dim,
             "input_dim": self.input_dim,
             "num_class": self.num_class,
             "model_path": str(model_path),
@@ -348,7 +323,6 @@ class MLPAdapter(BaseModelAdapter):
         save_dir = path / Split.TRAIN.value / "save"
         meta = self.load_meta(save_dir)
 
-        self.feature_dim = int(meta["feature_dim"])
         self.input_dim = int(meta["input_dim"])
         self.num_class = int(meta["num_class"])
 

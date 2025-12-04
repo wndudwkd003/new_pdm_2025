@@ -206,7 +206,7 @@ def main():
     meta = {
         "continuous_cols": feature_cols,
         "categorical_cols": [],
-        "feature_dim": len(feature_cols),
+        "input_dim": len(feature_cols),
         "num_class": NUM_CLASS,
         "num_samples": {
             "train": len(X_train),

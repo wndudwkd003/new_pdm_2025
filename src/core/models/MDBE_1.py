@@ -25,13 +25,11 @@ class HybridDoubleBranchEncoder(nn.Module):
         transformer_layers: int,
         decoder_hidden_dim: int,
         total_layer: int,
-        horizon: int,
     ):
 
         super().__init__()
 
         self.input_dim = input_dim
-        self.horizon = horizon
         self.num_class = num_class
         self.num_tokens = num_class + 1
         self.start_idx = num_class
@@ -71,6 +69,8 @@ class HybridDoubleBranchEncoder(nn.Module):
 
         self.decoder_out = nn.Linear(decoder_hidden_dim, num_class)
 
+        self.init_bn = nn.BatchNorm1d(input_dim)
+
 
     def forward(
         self,
@@ -78,8 +78,13 @@ class HybridDoubleBranchEncoder(nn.Module):
         bemv:   torch.Tensor,
     ) ->        torch.Tensor:
 
-        # todo 결측 의존 비의존 제대로
-        x_emb, bemv_emb = self.embedder(x, bemv)
+        # 초기 배치 정규화
+        B, S, F = x.shape
+        x_flat = x.view(B * S, F)
+        x_n_flat = self.init_bn(x_flat)
+        x_n = x_n_flat.view(B, S, F)
+
+        x_emb, bemv_emb = self.embedder(x_n, bemv)
         x_feat = self.mpie(x_emb, bemv_emb)
         hs = []
 

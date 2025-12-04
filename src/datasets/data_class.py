@@ -443,7 +443,7 @@ class Datasets(Dataset):
         conti_cols = meta_json["continuous_cols"]
         cate_cols = meta_json["categorical_cols"]
         num_class = meta_json["num_class"]
-        feature_dim = meta_json["feature_dim"]
+        input_dim = meta_json["input_dim"]
 
         # csv path
         X_path = split_dir / "X.csv"
@@ -459,7 +459,7 @@ class Datasets(Dataset):
         meta = DatasetMeta(
             continuous_cols=conti_cols,
             categorical_cols=cate_cols,
-            feature_dim=feature_dim,
+            input_dim=input_dim,
             num_class=num_class,
         )
 

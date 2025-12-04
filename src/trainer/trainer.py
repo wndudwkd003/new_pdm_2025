@@ -93,6 +93,7 @@ class Trainer:
                 print(f"Pre-trained model loaded from {pre_trained_dir}")
 
             results = self.adapter.fit(train_ds, valid_ds)
+            print(f"Training completed.")
             self.adapter.save(model_save_dir)
 
             results_dir = self.work_dir / "history"

@@ -18,7 +18,7 @@ class Data:
     datasets: DatasetType = DatasetType.MPTMS
     skip_header: bool = True
     data_load_workers: int = 10
-    num_workers: int = 10
+    num_workers: int = 5
     missing_patterns: list[MissingPattern] = field(default_factory=lambda: [MissingPattern.MCAR])
     missing_scenario: MissingScenario = MissingScenario.MULTI # SINGLE, MULTI
     target_missing_ratio: float = 0.5 # 0.5
@@ -31,11 +31,11 @@ class Data:
 @dataclass
 class Train:
     epochs: int = 1000
-    batch_size: int = 128 # 8
+    batch_size: int = 512 # 8
     lr: float = 1e-3
     device: str = "cuda"
     output_dir: str = "outputs"
-    seed: int = 42
+    seed: int = 6652 # 42 2025 6652
     early_stopping_rounds: int = 15
     lr_min: float = 1e-5
     tree_method: str = "hist"
@@ -43,11 +43,12 @@ class Train:
 
 @dataclass
 class Model:
-    model: ModelType = ModelType.TABPFN
+    model: ModelType = ModelType.RESMLP
     stage: StageType = StageType.NONE
     other_prefix: str = ""
     save_work_dir: str = ""
     model_size: ModelSize = ModelSize.NONE
+    cross_ent_metric: str = "cross_entropy"
 
     # xgboost
     eval_metric: str = "mlogloss"
@@ -73,7 +74,7 @@ class Config:
 class DatasetMeta:
     continuous_cols: list[str] = field(default_factory=list)
     categorical_cols: list[str] = field(default_factory=list)
-    feature_dim: int = 0
+    input_dim: int = 0
     num_class: int = 0
 
 

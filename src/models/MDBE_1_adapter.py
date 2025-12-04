@@ -25,7 +25,7 @@ class MDBE_1_Adapter(BaseModelAdapter):
         self.device = self.config.train.device
         self.train_mode = self.config.model.stage
 
-        self.feature_dim: int | None = None
+        self.input_dim: int | None = None
         self.num_class: int | None = None
 
     def fit(
@@ -36,12 +36,10 @@ class MDBE_1_Adapter(BaseModelAdapter):
         tr_loader = train_data.get_loader_for_deep(shuffle=True)
         vl_loader = valid_data.get_loader_for_deep(shuffle=False)
 
-        self.feature_dim = train_data.meta.feature_dim
+        self.input_dim = train_data.meta.input_dim
         self.num_class = train_data.meta.num_class
 
-        # 모델 생성 (horizon 제거됨)
-        self.model = self._get_model(self.feature_dim, self.num_class)
-        self.model.to(self.device)
+        self.model = self._get_model(self.input_dim, self.num_class)
 
         optimizer, scheduler = self.get_deeplearning_utils()
 
@@ -91,7 +89,7 @@ class MDBE_1_Adapter(BaseModelAdapter):
         # Best state 로드
         if best_state is not None:
             self.model.load_state_dict(best_state)
-        self.model.to(self.device)
+            self.model.to(self.device)
 
         # 결과 계산
         if self.train_mode == StageType.FINETUNE:
@@ -179,12 +177,6 @@ class MDBE_1_Adapter(BaseModelAdapter):
         self,
         loader: DataLoader,
     ):
-        if self.train_mode != StageType.FINETUNE:
-            raise ValueError("predict는 FINETUNE 단계에서만 사용할 수 있습니다.")
-
-        if self.model is None:
-            raise ValueError("모델이 로드되지 않았습니다.")
-
         self.model.eval()
 
         total_loss = 0.0
@@ -200,10 +192,9 @@ class MDBE_1_Adapter(BaseModelAdapter):
 
             with torch.no_grad():
                 out = self.model(x, bemv)
-                logits = out["logits"]  # (B, C)
-
+                logits = out["logits"]
                 loss = F.cross_entropy(logits, y)
-                preds = logits.argmax(dim=-1)  # (B,)
+                preds = logits.argmax(dim=-1)
 
             total_loss += float(loss.item())
             num_batches += 1
@@ -231,7 +222,7 @@ class MDBE_1_Adapter(BaseModelAdapter):
         is_train = (split == Split.TRAIN)
         self.model.train() if is_train else self.model.eval()
 
-        desc = f"[{self.config.model.model.name} {split.name}]"
+        desc = self.get_desc(self.config.model.model.name, split)
 
         total_loss = 0.0
         num_batches = 0
@@ -239,7 +230,6 @@ class MDBE_1_Adapter(BaseModelAdapter):
         for batch in tqdm(loader, desc=desc):
             x, y, x_ori, bemv, _, _ = self._prepare_batch(batch)
 
-            # Pretrain시 사용할 clean mask (모두 1)
             clean_bemv = torch.ones_like(bemv)
 
             with torch.set_grad_enabled(is_train):
@@ -269,7 +259,7 @@ class MDBE_1_Adapter(BaseModelAdapter):
                 elif self.train_mode == StageType.FINETUNE:
                     # Finetune: Classification
                     out = self.model(x, bemv)
-                    logits = out["logits"] # (B, C)
+                    logits = out["logits"]
 
                     loss = F.cross_entropy(logits, y)
 
@@ -287,22 +277,10 @@ class MDBE_1_Adapter(BaseModelAdapter):
         self,
         batch: dict,
     ):
-        # Flatten logic: (B, H, F) -> (B, F) 또는 (B, 1, F) -> (B, F)
-        # 데이터가 이미 2D (B, F)라면 그대로 사용
         x = batch["x"].to(self.device)
-        if x.dim() > 2:
-            x = x.view(x.size(0), -1)
-
         y = batch["y"].to(self.device)
-
         x_ori = batch["x_originals"].to(self.device)
-        if x_ori.dim() > 2:
-            x_ori = x_ori.view(x_ori.size(0), -1)
-
         bemv = batch["bemv"].to(self.device)
-        if bemv.dim() > 2:
-            bemv = bemv.view(bemv.size(0), -1)
-
         pattern_idx = batch["pattern_idx"]
         ratio_idx = batch["ratio_idx"]
 
@@ -313,7 +291,7 @@ class MDBE_1_Adapter(BaseModelAdapter):
         input_dim: int,
         num_class: int,
     ):
-        # horizon 인자 제거
+
         model = HybridDoubleBranchEncoder(
             input_dim=input_dim,
             embed_dim=self.config.params.embed_dim,
@@ -323,7 +301,6 @@ class MDBE_1_Adapter(BaseModelAdapter):
             transformer_layers=self.config.params.transformer_layers,
             decoder_hidden_dim=self.config.params.decoder_hidden_dim,
             total_layer=self.config.params.total_layer,
-            # horizon=self.horizon  <-- 제거됨
         ).to(self.device)
         return model
 
@@ -341,10 +318,9 @@ class MDBE_1_Adapter(BaseModelAdapter):
         torch.save(self.model.state_dict(), model_path)
 
         meta = {
-            "feature_dim": self.feature_dim,
+            "input_dim": self.input_dim,
             "num_class": self.num_class,
             "model_path": str(model_path),
-            # "horizon": self.horizon <-- 제거됨
         }
 
         self.save_meta(save_dir, meta)
@@ -358,15 +334,15 @@ class MDBE_1_Adapter(BaseModelAdapter):
         save_dir = path / Split.TRAIN.value / "save"
         meta = self.load_meta(save_dir)
 
-        feature_dim = int(meta["feature_dim"])
+        input_dim = int(meta["input_dim"])
         num_class = int(meta["num_class"])
         model_path = Path(meta["model_path"])
 
-        self.feature_dim = feature_dim
+        self.input_dim = input_dim
         self.num_class = num_class
         self.device = self.config.train.device
 
-        self.model = self._get_model(feature_dim, num_class)
+        self.model = self._get_model(input_dim, num_class)
         state = torch.load(model_path, map_location=self.device)
         self.model.load_state_dict(state)
         self.model.to(self.device)
