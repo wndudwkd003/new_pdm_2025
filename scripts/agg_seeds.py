@@ -5,6 +5,7 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List
+import csv
 
 import numpy as np
 import matplotlib.pyplot as plt
@@ -16,42 +17,6 @@ class RunMetrics:
     name: str
     overall: Dict
     by_ratio: Dict[str, Dict[float, Dict]]
-
-
-def _collect_run_dirs_from_range(start_dir: Path, end_dir: Path) -> list[Path]:
-    """
-    start_dir, end_dir 가 주어졌을 때:
-    - 둘의 parent 디렉토리(보통 outputs/) 안을 훑어서
-    - 이름이 start~end 범위 사이이고
-    - signature(모델/세팅)가 start_dir 와 같은 것들을 모두 모아 반환.
-    """
-    if start_dir.parent != end_dir.parent:
-        raise ValueError(f"start_dir 와 end_dir 의 부모 디렉토리가 다릅니다: {start_dir.parent}, {end_dir.parent}")
-
-    base_dir = start_dir.parent
-
-    name_lo = min(start_dir.name, end_dir.name)
-    name_hi = max(start_dir.name, end_dir.name)
-
-    sig_ref = _parse_signature(start_dir.name)
-
-    selected: list[Path] = []
-    for p in base_dir.iterdir():
-        if not p.is_dir():
-            continue
-        n = p.name
-        # 시간 범위 (이름에 날짜+시간이 prefix라서 문자열 비교 가능)
-        if n < name_lo or n > name_hi:
-            continue
-
-        # 세팅(signature) 동일한 것만 선택
-        if _parse_signature(n) != sig_ref:
-            continue
-
-        selected.append(p)
-
-    selected.sort(key=lambda x: x.name)
-    return selected
 
 
 def _parse_signature(run_name: str) -> str:
@@ -74,7 +39,6 @@ def _parse_signature(run_name: str) -> str:
     tokens = [t for t in tokens if not t.startswith("seed")]
 
     return "_".join(tokens)
-
 
 
 def _set_ylim_from_values(
@@ -111,29 +75,50 @@ def _set_ylim_from_values(
     plt.ylim(y_min, y_max)
 
 
-def load_results(run_dir: Path) -> RunMetrics:
+def load_results(run_dir: Path, test_index: int | None = None) -> RunMetrics:
     """
     run_dir:
         outputs/.... (개별 seed run 디렉토리)
     내부 구조 (Trainer 기준):
         run_dir/test/test_k/results_raw.json
+
+    test_index:
+        - None: 가장 index가 큰 test_k 사용
+        - 정수 k: test_k 디렉토리를 사용
     """
     test_root = run_dir / "test"
-    test_dirs = []
+    test_dirs: list[tuple[int, Path]] = []
     for p in test_root.iterdir():
         if p.is_dir() and p.name.startswith("test_"):
             parts = p.name.split("_")
             if len(parts) == 2 and parts[1].isdigit():
-                test_dirs.append((int(parts[1]), p))
+                idx = int(parts[1])
+                test_dirs.append((idx, p))
 
     if len(test_dirs) == 0:
         raise ValueError(f"'{test_root}' 안에 'test_*' 디렉토리가 없습니다.")
 
-    # 가장 index가 큰 test 디렉토리 사용
-    test_dirs.sort(key=lambda x: x[0])
-    _, latest_test_dir = test_dirs[-1]
+    if test_index is None:
+        # 가장 index가 큰 test 디렉토리 사용
+        test_dirs.sort(key=lambda x: x[0])
+        _, target_test_dir = test_dirs[-1]
+    else:
+        # 지정한 index 와 일치하는 test_k 찾기
+        found: List[tuple[int, Path]] = []
+        for idx, p in test_dirs:
+            if idx == test_index:
+                found.append((idx, p))
 
-    results_path = latest_test_dir / "results_raw.json"
+        if len(found) == 0:
+            available = [idx for idx, _ in test_dirs]
+            raise ValueError(
+                f"{run_dir} 에 test_{test_index} 디렉토리가 없습니다. "
+                f"사용 가능한 index: {available}"
+            )
+
+        target_test_dir = found[0][1]
+
+    results_path = target_test_dir / "results_raw.json"
     with open(results_path, "r", encoding="utf-8") as f:
         results = json.load(f)
 
@@ -254,9 +239,9 @@ def aggregate_all(run_metrics: List[RunMetrics]) -> Dict:
         # ratio key 는 float 로 캐스팅 가능하다고 가정
         ratios = sorted(ratio_dict.keys(), key=float)
         for ratio in ratios:
-            metrics_list = [
-                rm.by_ratio[pattern][ratio] for rm in run_metrics
-            ]
+            metrics_list: List[Dict] = []
+            for rm in run_metrics:
+                metrics_list.append(rm.by_ratio[pattern][ratio])
             agg_by_ratio[pattern][ratio] = aggregate_metrics_list(metrics_list)
 
     return {
@@ -265,12 +250,117 @@ def aggregate_all(run_metrics: List[RunMetrics]) -> Dict:
     }
 
 
-def make_output_dir(run_dirs: List[Path]) -> Path:
+# ─────────────────────────────────────────────
+# 0.0 ratio 를 제외한 run 단위 overall 계산용
+# ─────────────────────────────────────────────
+
+def _combine_metrics_over_nonzero_ratios(metrics_list: List[Dict]) -> Dict:
+    """
+    하나의 run 에 대해,
+    pattern/ratio 조합 중 ratio > 0.0 인 metrics 들만 모아서
+    '0.0 제외 overall' metric 을 하나로 합친다.
+
+    - 스칼라는 단순 평균
+    - per_class 스칼라도 단순 평균
+    - num_samples / support 는 합으로 둔다
+    """
+    if len(metrics_list) == 0:
+        raise ValueError("_combine_metrics_over_nonzero_ratios(): metrics_list 가 비었습니다.")
+
+    base = metrics_list[0]
+
+    scalar_keys = [
+        k for k in base.keys()
+        if k not in ("per_class", "num_samples")
+    ]
+
+    combined: Dict = {}
+
+    # num_samples 는 모든 ratio>0.0 케이스의 합
+    total_samples = 0
+    for m in metrics_list:
+        total_samples += int(m["num_samples"])
+    combined["num_samples"] = int(total_samples)
+
+    # 스칼라 metric 들 평균
+    for key in scalar_keys:
+        vals = np.array([float(m[key]) for m in metrics_list], dtype=float)
+        combined[key] = float(vals.mean())
+
+    # per_class 평균 + support 합
+    per_class_base = base["per_class"]
+    class_keys = sorted(per_class_base.keys(), key=lambda s: int(s))
+
+    combined_per_class: Dict[str, Dict] = {}
+
+    for cls in class_keys:
+        cls_dict: Dict = {}
+
+        for metric_name in ("precision", "recall", "f1"):
+            vals: List[float] = []
+            for m in metrics_list:
+                vals.append(float(m["per_class"][cls][metric_name]))
+            arr = np.array(vals, dtype=float)
+            cls_dict[metric_name] = float(arr.mean())
+
+        # support 는 합으로 둔다
+        total_support = 0
+        for m in metrics_list:
+            total_support += int(m["per_class"][cls]["support"])
+        cls_dict["support"] = int(total_support)
+
+        combined_per_class[cls] = cls_dict
+
+    combined["per_class"] = combined_per_class
+    return combined
+
+
+def aggregate_overall_excl_zero(run_metrics: List[RunMetrics]) -> Dict | None:
+    """
+    run_metrics 각 run 에 대해:
+      - by_ratio 에서 ratio > 0.0 인 것들만 모아서
+        그 run 의 '0.0 제외 overall metric' 을 만든 뒤
+      - 그것을 여러 seed 에 대해 aggregate_metrics_list 로 평균/표준편차 계산.
+
+    ratio>0.0 이 전혀 없으면 None 반환.
+    """
+    per_run_metrics: List[Dict] = []
+
+    for rm in run_metrics:
+        metrics_nonzero: List[Dict] = []
+
+        for pattern, ratio_dict in rm.by_ratio.items():
+            for ratio_key, metrics in ratio_dict.items():
+                ratio_val = float(ratio_key)
+                if ratio_val > 0.0:
+                    metrics_nonzero.append(metrics)
+
+        if len(metrics_nonzero) == 0:
+            # 이 run 에 nonzero ratio 가 없으면 건너뜀
+            continue
+
+        combined = _combine_metrics_over_nonzero_ratios(metrics_nonzero)
+        per_run_metrics.append(combined)
+
+    if len(per_run_metrics) == 0:
+        return None
+
+    return aggregate_metrics_list(per_run_metrics)
+
+
+# ─────────────────────────────────────────────
+# 출력 디렉토리/파일 저장
+# ─────────────────────────────────────────────
+
+def make_output_dir(run_dirs: List[Path], test_index: int | None = None) -> Path:
     """
     outputs_seeds/ 하위에, 첫 번째 run dir 이름에서 'seed***' 토큰만 제거한
     폴더명을 만들어서 반환.
     예) 2025-12-03_09-04-40_xgboost_seed2025_0.0_to_0.5_...
         → 2025-12-03_09-04-40_xgboost_0.0_to_0.5_...
+
+    test_index 가 주어지면 그 아래에 test_{k} 폴더를 한 번 더 판다.
+    예) .../2025-12-04_08-24-29_xgboost_0.0_to_0.0_0.0_step_single_mcar_zero/test_0
     """
     base = Path("outputs_seeds")
     base.mkdir(parents=True, exist_ok=True)
@@ -281,6 +371,9 @@ def make_output_dir(run_dirs: List[Path]) -> Path:
     out_name = "_".join(filtered)
 
     out_dir = base / out_name
+    if test_index is not None:
+        out_dir = out_dir / f"test_{test_index}"
+
     out_dir.mkdir(parents=True, exist_ok=True)
     return out_dir
 
@@ -292,6 +385,7 @@ def save_agg_json_txt(
 ):
     """
     전체 aggregation 결과를 JSON + TXT로 저장.
+    (기존: 0.0 포함 전체)
     """
     payload = {
         "run_dirs": [str(p) for p in run_dirs],
@@ -321,6 +415,40 @@ def save_agg_json_txt(
         f.write("\n".join(lines))
 
 
+def save_agg_excl_zero_json_txt(
+    agg_excl_zero: Dict,
+    run_dirs: List[Path],
+    out_dir: Path,
+):
+    """
+    ratio == 0.0 을 제외한 전체 aggregation 결과를
+    별도의 JSON + TXT 로 저장.
+    """
+    payload = {
+        "run_dirs": [str(p) for p in run_dirs],
+        "agg_overall_excl_zero": agg_excl_zero,
+    }
+
+    with open(out_dir / "agg_results_excl_zero.json", "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+
+    scalars = agg_excl_zero["scalars"]
+
+    lines: List[str] = []
+    lines.append(f"num_runs: {agg_excl_zero['num_runs']}  # seed 수")
+    lines.append(f"num_samples (per run, base): {agg_excl_zero['num_samples']}")
+    lines.append("")
+    lines.append("[overall scalar metrics (excluding ratio=0.0)]")
+    for key in sorted(scalars.keys()):
+        m = scalars[key]
+        lines.append(
+            f"{key}: mean={m['mean']:.6f}, std={m['std']:.6f}"
+        )
+
+    with open(out_dir / "summary_excl_zero.txt", "w", encoding="utf-8") as f:
+        f.write("\n".join(lines))
+
+
 def plot_overall_bar(agg_overall: Dict, out_dir: Path):
     """
     overall 스칼라 metric 들의 mean/std 를 막대 그래프로 저장.
@@ -342,6 +470,7 @@ def plot_overall_bar(agg_overall: Dict, out_dir: Path):
     plt.tight_layout()
     plt.savefig(out_dir / "overall_metrics_bar.png", dpi=150)
     plt.close()
+
 
 def plot_ratio_curves(agg_by_ratio: Dict[str, Dict[float, Dict]], out_dir: Path):
     """
@@ -444,49 +573,176 @@ def plot_ratio_curves(agg_by_ratio: Dict[str, Dict[float, Dict]], out_dir: Path)
             plt.close()
 
 
+# ─────────────────────────────────────────────
+#  missing ratio별 CSV 저장 (소수점 5자리 반올림)
+# ─────────────────────────────────────────────
+
+def _parse_seed_from_run_dir_name(name: str) -> str:
+    """
+    run dir 이름에서 seed 값을 문자열로 파싱.
+    예: ..._seed42_... → "42"
+    seed 토큰이 없으면 전체 이름을 그대로 반환.
+    """
+    tokens = name.split("_")
+    for tok in tokens:
+        if tok.startswith("seed"):
+            return tok[4:] if len(tok) > 4 else tok
+    return name
+
+
+def _fmt5(x):
+    """
+    CSV 저장용: 숫자는 소수점 5자리까지 반올림해서 문자열로,
+    그 외는 그대로 반환.
+    """
+    if isinstance(x, (int, float)):
+        return f"{x:.5f}"
+    return x
+
+
+def save_ratio_csvs(
+    agg_by_ratio: Dict[str, Dict[float, Dict]],
+    run_dirs: List[Path],
+    out_dir: Path,
+):
+    """
+    - metrics_by_ratio_seeds.csv
+      컬럼: 메트릭, 시드, 0.0, 0.1, ...
+      각 행: (metric, seed)에 대해 ratio별 값
+
+    - metrics_by_ratio_mean_std.csv
+      컬럼: 구분, 메트릭, 0.0, 0.1, ...
+      각 metric마다 2행:
+        - 구분=평균: mean
+        - 구분=편차: std
+
+    값들은 모두 소수점 5자리에서 반올림한 문자열로 저장.
+    """
+    if len(agg_by_ratio) == 0:
+        return
+
+    # 여러 pattern 이 있을 수 있으나, 여기서는 첫 번째 pattern 기준으로 CSV 생성
+    pattern_names = sorted(agg_by_ratio.keys())
+    pattern = pattern_names[0]
+    ratios_dict = agg_by_ratio[pattern]
+
+    if len(ratios_dict) == 0:
+        return
+
+    # ratio 컬럼들 (문자열 그대로 사용)
+    ratio_keys_sorted = sorted(ratios_dict.keys(), key=float)
+
+    # metric 목록 (첫 ratio 기준)
+    first_ratio = ratio_keys_sorted[0]
+    metric_keys = sorted(ratios_dict[first_ratio]["scalars"].keys())
+
+    # seed 리스트
+    seed_names: List[str] = []
+    for rd in run_dirs:
+        seed_names.append(_parse_seed_from_run_dir_name(rd.name))
+
+    num_runs = len(seed_names)
+
+    # 1) 시드별 CSV
+    seeds_csv_path = out_dir / "metrics_by_ratio_seeds.csv"
+    with open(seeds_csv_path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        header = ["메트릭", "시드"] + [str(r) for r in ratio_keys_sorted]
+        writer.writerow(header)
+
+        for metric in metric_keys:
+            for i in range(num_runs):
+                row: List[object] = [metric, seed_names[i]]
+                for rk in ratio_keys_sorted:
+                    scalar = agg_by_ratio[pattern][rk]["scalars"][metric]
+                    vals = scalar["values"]
+                    # i번째 seed에 해당하는 값
+                    if i < len(vals):
+                        v = vals[i]
+                        v = _fmt5(v)
+                    else:
+                        v = ""
+                    row.append(v)
+                writer.writerow(row)
+
+    # 2) mean/std CSV
+    agg_csv_path = out_dir / "metrics_by_ratio_mean_std.csv"
+    with open(agg_csv_path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        header = ["구분", "메트릭"] + [str(r) for r in ratio_keys_sorted]
+        writer.writerow(header)
+
+        for metric in metric_keys:
+            # 평균 row
+            row_mean: List[object] = ["평균", metric]
+            for rk in ratio_keys_sorted:
+                scalar = agg_by_ratio[pattern][rk]["scalars"][metric]
+                row_mean.append(_fmt5(scalar["mean"]))
+            writer.writerow(row_mean)
+
+            # 편차 row
+            row_std: List[object] = ["편차", metric]
+            for rk in ratio_keys_sorted:
+                scalar = agg_by_ratio[pattern][rk]["scalars"][metric]
+                row_std.append(_fmt5(scalar["std"]))
+            writer.writerow(row_std)
+
 
 def main():
-    if len(sys.argv) < 2:
-        raise SystemExit("usage: python -m scripts.agg_seeds RUN_DIR1 [RUN_DIR2 ...]")
+    # 이제는 무조건 AUTO JSON 모드만 사용
+    if len(sys.argv) < 3:
+        raise SystemExit(
+            "usage:\n"
+            "  python -m scripts.agg_seeds AUTO_JSON_PATH TEST_INDEX\n"
+            "예: python -m scripts.agg_seeds "
+            "outputs_auto_run/2025-12-04_08-24-29_xgboost_0.0_to_0.0_0.0_step_single_mcar_zero_auto.json 0"
+        )
 
-    # case 1: 시작/끝 두 개만 준 경우 → 범위 안 run 자동 수집
-    if len(sys.argv) == 3:
-        start_dir = Path(sys.argv[1])
-        end_dir   = Path(sys.argv[2])
+    auto_json_path = Path(sys.argv[1])
+    test_index = int(sys.argv[2])
 
-        run_dirs = _collect_run_dirs_from_range(start_dir, end_dir)
+    with open(auto_json_path, "r", encoding="utf-8") as f:
+        auto_cfg = json.load(f)
 
-        if len(run_dirs) == 0:
-            raise ValueError(f"범위 내에 해당 세팅의 run 디렉토리가 없습니다.\n  start={start_dir}\n  end={end_dir}")
+    runs = auto_cfg.get("runs", [])
+    if len(runs) == 0:
+        raise ValueError(f"{auto_json_path} 안에 runs 항목이 비어 있습니다.")
 
-        print("[agg_seeds] collected run dirs (range mode):")
-        for p in run_dirs:
-            print(" ", p)
+    run_dirs: List[Path] = []
 
-    # case 2: 여러 개를 직접 나열한 경우 → 그대로 사용
-    else:
-        run_dirs = [Path(p) for p in sys.argv[1:]]
-        print("[agg_seeds] explicit run dirs:")
-        for p in run_dirs:
-            print(" ", p)
+    print("[agg_seeds] auto json mode:")
+    for r in runs:
+        seed = r.get("seed")
+        d = r.get("dir")
+        print(f"  seed={seed}, dir={d}")
+        run_dirs.append(Path(d))
 
-    run_metrics: list[RunMetrics] = []
+    run_metrics: List[RunMetrics] = []
     for rd in run_dirs:
-        rm = load_results(rd)
+        rm = load_results(rd, test_index=test_index)
         run_metrics.append(rm)
 
+    # 전체 + ratio별 aggregation
     agg = aggregate_all(run_metrics)
 
-    out_dir = make_output_dir(run_dirs)
+    out_dir = make_output_dir(run_dirs, test_index=test_index)
+
     print(f"[agg_seeds] output dir: {out_dir}")
 
     save_agg_json_txt(agg, run_dirs, out_dir)
+
+    # missing ratio별 CSV 두 개 저장 (소수점 5자리 반올림)
+    save_ratio_csvs(agg["agg_by_ratio"], run_dirs, out_dir)
+
+    # 0.0 ratio 제외한 overall aggregation
+    agg_excl_zero = aggregate_overall_excl_zero(run_metrics)
+    if agg_excl_zero is not None:
+        print("[agg_seeds] also saving metrics excluding ratio=0.0")
+        save_agg_excl_zero_json_txt(agg_excl_zero, run_dirs, out_dir)
+
     # overall bar 는 안 쓰신다고 하셔서 호출 안 함
     # plot_overall_bar(agg["agg_overall"], out_dir)
     plot_ratio_curves(agg["agg_by_ratio"], out_dir)
-
-
-
 
 
 if __name__ == "__main__":

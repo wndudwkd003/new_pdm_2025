@@ -2,7 +2,7 @@
 
 # chmod +x runs/agg_seeds.sh
 
-T1="outputs/2025-12-03_13-14-55_fttransformer_seed42_0.0_to_0.5_0.1_step_multi_mcar_zero"
-T2="outputs/2025-12-03_13-15-20_fttransformer_seed6652_0.0_to_0.5_0.1_step_multi_mcar_zero"
+RUN_JSON="outputs_auto_run/2025-12-04_08-31-10_lightgbm_0.0_to_0.0_0.0_step_single_mcar_zero_auto.json"
+TEST_MODE="0"
 
-python -m scripts.agg_seeds "$T1" "$T2"
+python -m scripts.agg_seeds "$RUN_JSON" "$TEST_MODE"

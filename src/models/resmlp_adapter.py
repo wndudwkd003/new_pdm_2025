@@ -287,7 +287,7 @@ class ResMLPAdapter(BaseModelAdapter):
             raise ValueError("num_class가 설정되지 않았습니다.")
 
         n_blocks = 4
-        d_block = 256
+        d_block = 128
         d_hidden = None
         d_hidden_multiplier = 2.0
         dropout1 = 0.1           # hidden dropout

@@ -1,0 +1,27 @@
+{
+    "timestamp": "2025-12-04_08-31-10",
+    "model": "lightgbm",
+    "scenario": "0.0_to_0.0_0.0_step_single_mcar_zero",
+    "runs": [
+        {
+            "seed": 42,
+            "dir": "outputs/2025-12-04_08-31-10_lightgbm_seed42_0.0_to_0.0_0.0_step_single_mcar_zero"
+        },
+        {
+            "seed": 234,
+            "dir": "outputs/2025-12-04_08-31-20_lightgbm_seed234_0.0_to_0.0_0.0_step_single_mcar_zero"
+        },
+        {
+            "seed": 2025,
+            "dir": "outputs/2025-12-04_08-31-30_lightgbm_seed2025_0.0_to_0.0_0.0_step_single_mcar_zero"
+        },
+        {
+            "seed": 6652,
+            "dir": "outputs/2025-12-04_08-31-40_lightgbm_seed6652_0.0_to_0.0_0.0_step_single_mcar_zero"
+        },
+        {
+            "seed": 45321,
+            "dir": "outputs/2025-12-04_08-31-50_lightgbm_seed45321_0.0_to_0.0_0.0_step_single_mcar_zero"
+        }
+    ]
+}
