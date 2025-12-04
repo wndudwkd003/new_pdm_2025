@@ -24,7 +24,7 @@ class Data:
     target_missing_ratio: float = 0.0 # 0.5 0.9
     start_missing_ratio: float  = 0.0
     step_missing_ratio: float   = 0.0 # 0.1
-    impute_method: ImputeMethod = ImputeMethod.MEAN
+    impute_method: ImputeMethod = ImputeMethod.ZERO
     use_on_batch: bool = True
     # stack_mode: StackMode
 
@@ -43,7 +43,7 @@ class Train:
 
 @dataclass
 class Model:
-    model: ModelType = ModelType.LIGHTGBM
+    model: ModelType = ModelType.FTTRANSFORMER
     stage: StageType = StageType.NONE
     other_prefix: str = ""
     save_work_dir: str = ""
