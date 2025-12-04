@@ -43,7 +43,7 @@ class Train:
 
 @dataclass
 class Model:
-    model: ModelType = ModelType.XGBOOST
+    model: ModelType = ModelType.LIGHTGBM
     stage: StageType = StageType.NONE
     other_prefix: str = ""
     save_work_dir: str = ""

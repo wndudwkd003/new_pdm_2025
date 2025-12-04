@@ -2,6 +2,7 @@ datasets/*/data/
 datasets/*/processed_data/
 outputs_seeds/
 outputs/
+outputs_auto_run/
 src/configs/token.yaml
 *.pyc
 
