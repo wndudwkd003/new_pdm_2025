@@ -16,6 +16,8 @@ from src.utils.eval_viz import (
     plot_metric_over_ratio,
 )
 from src.utils.zscore_utils import zscore_save, load_zscore_data
+from src.utils.imputer_utils import imputer_save, load_imputer_data
+
 
 class Trainer:
     def __init__(
@@ -74,17 +76,29 @@ class Trainer:
             # train 시 작업 디렉토리 생성
             self.work_dir = self.get_work_dir()
 
-            train_ds = Datasets(self.config, Split.TRAIN)
+            train_ds = Datasets(
+                self.config,
+                Split.TRAIN,
+                None,
+                None,
+            )
+
+            # train 시 만드는 것들
             train_zscore_meta = train_ds.zscore_meta
+            imputer_dict = train_ds.imputer_dict
 
-
-            valid_ds = Datasets(self.config, Split.VALID, train_zscore_meta)
+            valid_ds = Datasets(
+                self.config,
+                Split.VALID,
+                train_zscore_meta,
+                imputer_dict
+            )
 
             model_save_dir = self.work_dir / split.value
             model_save_dir.mkdir(parents=True, exist_ok=True)
 
-
             zscore_save(model_save_dir, train_zscore_meta)
+            imputer_save(model_save_dir, imputer_dict)
 
             if self.config.model.stage == StageType.FINETUNE:
                 pre_trained_dir = Path(self.config.model.save_work_dir)
@@ -105,8 +119,17 @@ class Trainer:
             self.work_dir = Path(self.config.model.save_work_dir)
             results_dir = self.get_next_result_dir("test")
 
-            train_zscore_meta = load_zscore_data(self.work_dir / Split.TRAIN.value)
-            test_ds = Datasets(self.config, Split.TEST, train_zscore_meta)
+            train_train_dir = self.work_dir / Split.TRAIN.value
+
+            train_zscore_meta = load_zscore_data(train_train_dir)
+            imputer_dict = load_imputer_data(train_train_dir)
+
+            test_ds = Datasets(
+                self.config,
+                Split.TEST,
+                train_zscore_meta,
+                imputer_dict,
+            )
 
             if not self.adapter.load(self.work_dir):
                 raise ValueError("모델 로드에 실패했습니다.")

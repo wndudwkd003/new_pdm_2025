@@ -20,11 +20,11 @@ class Data:
     data_load_workers: int = 10
     num_workers: int = 5
     missing_patterns: list[MissingPattern] = field(default_factory=lambda: [MissingPattern.MCAR])
-    missing_scenario: MissingScenario = MissingScenario.MULTI # SINGLE, MULTI
-    target_missing_ratio: float = 0.9 # 0.5 0.9
+    missing_scenario: MissingScenario = MissingScenario.SINGLE # SINGLE, MULTI
+    target_missing_ratio: float = 0.0 # 0.5 0.9
     start_missing_ratio: float  = 0.0
-    step_missing_ratio: float   = 0.1 # 0.1
-    impute_method: ImputeMethod = ImputeMethod.ZERO
+    step_missing_ratio: float   = 0.0 # 0.1
+    impute_method: ImputeMethod = ImputeMethod.MEAN
     use_on_batch: bool = True
     # stack_mode: StackMode
 
@@ -43,7 +43,7 @@ class Train:
 
 @dataclass
 class Model:
-    model: ModelType = ModelType.LIGHTGBM
+    model: ModelType = ModelType.XGBOOST
     stage: StageType = StageType.NONE
     other_prefix: str = ""
     save_work_dir: str = ""

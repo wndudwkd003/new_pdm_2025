@@ -9,6 +9,8 @@ from pathlib import Path
 import json
 from tqdm.auto import tqdm
 import pandas as pd
+
+
 from src.imputer.base_imputer import BaseImputeAdapter
 from src.configs.configs import Config, DatasetMeta
 
@@ -91,6 +93,7 @@ class Datasets(Dataset):
         config: Config,
         split: Split,
         zscore_meta: ZScoreMeta | None = None,
+        imputer_dict: dict[str, BaseImputeAdapter] | None = None,
     ):
         super().__init__()
 
@@ -101,6 +104,10 @@ class Datasets(Dataset):
         self.data_name = use_dataset.name
         self.data_dir = use_dataset.value
         self.zscore_meta = zscore_meta
+
+        self.imputer_dict_external = imputer_dict
+        self.imputer_dict = None
+
 
 
         # CSV 데이터 로드
@@ -296,7 +303,6 @@ class Datasets(Dataset):
         missing_dict: dict,
     ):
         impute_method = self.config.data.impute_method
-
         Imputer = IMPUTER_MAP[impute_method]
 
         imputed_dict = {
@@ -306,23 +312,40 @@ class Datasets(Dataset):
             }
         }
 
+        # 실제로 사용한 imputer들을 보관
+        self.imputer_dict = {}
+
+        use_external = self.imputer_dict_external is not None
+
         # 패턴별로 impute
         for pattern in tqdm(self.config.data.missing_patterns, desc=f"Imputing ({impute_method.name})"):
             pattern_v = pattern.value
-
             ratio_dict = missing_dict[pattern_v]
 
-            X_fit_list = []
+            # ---------------------------
+            # 1) train: 새로 fit
+            # ---------------------------
+            if not use_external:
+                X_fit_list: list[np.ndarray] = []
 
-            for ratio in self.ratios:
-                X_miss = ratio_dict[ratio]["X"]
-                X_fit_list.append(X_miss)
+                for ratio in self.ratios:
+                    X_miss = ratio_dict[ratio]["X"]
+                    X_fit_list.append(X_miss)
 
-            X_fit = np.concatenate(X_fit_list, axis=0)
+                X_fit = np.concatenate(X_fit_list, axis=0)
 
-            imputer: BaseImputeAdapter = Imputer()
-            imputer.fit(X_fit)
+                imputer: BaseImputeAdapter = Imputer()
+                imputer.fit(X_fit)
+            # ---------------------------
+            # 2) valid / test: 이미 train에서 만든 imputer 사용
+            # ---------------------------
+            else:
+                imputer = self.imputer_dict_external[pattern_v]
 
+            # 현재 패턴에 사용한 imputer를 기록 (train이면 새로 만든 것, valid/test면 외부 것)
+            self.imputer_dict[pattern_v] = imputer
+
+            # 공통 transform
             imputed_dict[pattern_v] = dict()
 
             for ratio in self.ratios:
@@ -338,6 +361,8 @@ class Datasets(Dataset):
                 }
 
         return imputed_dict
+
+
 
 
     def get_data_for_gbdt(self):
