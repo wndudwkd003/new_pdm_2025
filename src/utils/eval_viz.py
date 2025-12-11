@@ -196,11 +196,21 @@ def save_history_artifacts(
         "tasks": [
             {"train": [...], "valid": [...]},
             ...
-        ]
+        ],
+        "components": {
+            "stage1": {
+                "train": {"info": [...], "recon": [...], "r": [...]},
+                "valid": {"info": [...], "recon": [...], "r": [...]},
+            },
+            "stage2": {
+                "train": {"ce": [...], "recon": [...], "r": [...]},
+                "valid": {"ce": [...], "recon": [...], "r": [...]},
+            },
+        },
     }
 
-    각 task별 train/valid curve + 전체 평균 curve 저장.
-    (여기서의 task는 더 이상 horizon 개념이 아니라, 단순히 여러 loss 시퀀스라는 의미)
+    각 task별 train/valid curve + 전체 평균 curve,
+    그리고 stage별 loss component curve를 저장합니다.
     """
     save_dir = Path(save_dir)
     save_dir.mkdir(parents=True, exist_ok=True)
@@ -208,7 +218,9 @@ def save_history_artifacts(
     metric_name: str = history["metric_name"]
     tasks: list[dict] = history["tasks"]
 
-    # 1) 각 task별 개별 그래프
+    # -------------------------------
+    # 1) 기존: total loss 시각화
+    # -------------------------------
     for t, h in enumerate(tasks):
         train_series = h["train"]
         valid_series = h["valid"]
@@ -244,57 +256,123 @@ def save_history_artifacts(
         plt.savefig(outpath_zoom, dpi=150)
         plt.close()
 
-    # 2) 전체 task 평균 그래프
-    if len(tasks) == 0:
-        return
+    # 전체 task 평균
+    if len(tasks) > 0:
+        min_len_train = min(len(h["train"]) for h in tasks)
+        min_len_valid = min(len(h["valid"]) for h in tasks)
+        L = min(min_len_train, min_len_valid)
 
-    min_len_train = min(len(h["train"]) for h in tasks)
-    min_len_valid = min(len(h["valid"]) for h in tasks)
-    L = min(min_len_train, min_len_valid)
+        if L > 0:
+            train_stack = np.stack(
+                [np.asarray(h["train"][:L], dtype=float) for h in tasks],
+                axis=0,
+            )
+            valid_stack = np.stack(
+                [np.asarray(h["valid"][:L], dtype=float) for h in tasks],
+                axis=0,
+            )
 
-    if L <= 0:
-        return
+            train_mean = train_stack.mean(axis=0)
+            valid_mean = valid_stack.mean(axis=0)
+            iters = np.arange(L)
 
-    train_stack = np.stack(
-        [np.asarray(h["train"][:L], dtype=float) for h in tasks],
-        axis=0,
-    )
-    valid_stack = np.stack(
-        [np.asarray(h["valid"][:L], dtype=float) for h in tasks],
-        axis=0,
-    )
+            # (1) 원본 스케일
+            plt.figure()
+            plt.plot(iters, train_mean, label="train (mean)")
+            plt.plot(iters, valid_mean, label="valid (mean)")
+            plt.xlabel("Iteration")
+            plt.ylabel(metric_name)
+            plt.title(f"Overall - {metric_name} (mean over tasks)")
+            plt.grid(True)
+            plt.legend()
+            plt.tight_layout()
+            outpath_overall = save_dir / f"overall_{metric_name}.png"
+            plt.savefig(outpath_overall, dpi=150)
+            plt.close()
 
-    train_mean = train_stack.mean(axis=0)
-    valid_mean = valid_stack.mean(axis=0)
-    iters = np.arange(L)
+            # (2) 확대 버전
+            plt.figure()
+            plt.plot(iters, train_mean, label="train (mean)")
+            plt.plot(iters, valid_mean, label="valid (mean)")
+            plt.xlabel("Iteration")
+            plt.ylabel(metric_name)
+            plt.title(f"Overall - {metric_name} (mean over tasks, zoom)")
+            plt.grid(True)
+            plt.legend()
 
-    # (1) 원본 스케일
-    plt.figure()
-    plt.plot(iters, train_mean, label="train (mean)")
-    plt.plot(iters, valid_mean, label="valid (mean)")
-    plt.xlabel("Iteration")
-    plt.ylabel(metric_name)
-    plt.title(f"Overall - {metric_name} (mean over tasks)")
-    plt.grid(True)
-    plt.legend()
-    plt.tight_layout()
-    outpath_overall = save_dir / f"overall_{metric_name}.png"
-    plt.savefig(outpath_overall, dpi=150)
-    plt.close()
+            _set_ylim_from_series([train_mean, valid_mean])
 
-    # (2) 확대 버전
-    plt.figure()
-    plt.plot(iters, train_mean, label="train (mean)")
-    plt.plot(iters, valid_mean, label="valid (mean)")
-    plt.xlabel("Iteration")
-    plt.ylabel(metric_name)
-    plt.title(f"Overall - {metric_name} (mean over tasks, zoom)")
-    plt.grid(True)
-    plt.legend()
+            plt.tight_layout()
+            outpath_overall_zoom = save_dir / f"overall_{metric_name}_zoom.png"
+            plt.savefig(outpath_overall_zoom, dpi=150)
+            plt.close()
 
-    _set_ylim_from_series([train_mean, valid_mean])
+    # -----------------------------------------
+    # 2) 추가: stage별 loss component 시각화
+    #    (ReGAEAdapter가 넣어준 "components" 사용)
+    # -----------------------------------------
+    if "components" in history and isinstance(history["components"], dict):
+        components = history["components"]
 
-    plt.tight_layout()
-    outpath_overall_zoom = save_dir / f"overall_{metric_name}_zoom.png"
-    plt.savefig(outpath_overall_zoom, dpi=150)
-    plt.close()
+        # stage: "stage1", "stage2"
+        for stage_name, stage_dict in components.items():
+            # 가능한 컴포넌트 이름들 자동 수집
+            train_comp = stage_dict.get("train", {})
+            valid_comp = stage_dict.get("valid", {})
+
+            comp_names = set()
+            if isinstance(train_comp, dict):
+                comp_names.update(k for k in train_comp.keys() if train_comp[k] is not None)
+            if isinstance(valid_comp, dict):
+                comp_names.update(k for k in valid_comp.keys() if valid_comp[k] is not None)
+
+            for comp_name in sorted(comp_names):
+                train_series = train_comp.get(comp_name)
+                valid_series = valid_comp.get(comp_name)
+
+                # 둘 다 None이면 스킵
+                if train_series is None and valid_series is None:
+                    continue
+
+                # 리스트 형태로만 정리 (None이면 빈 리스트)
+                if train_series is None:
+                    train_series = []
+                if valid_series is None:
+                    valid_series = []
+
+                # (1) 원본 스케일
+                plt.figure()
+                if len(train_series) > 0:
+                    plt.plot(train_series, label="train")
+                if len(valid_series) > 0:
+                    plt.plot(valid_series, label="valid")
+
+                plt.xlabel("Epoch")
+                plt.ylabel(comp_name)
+                plt.title(f"{stage_name} - {comp_name}")
+                plt.grid(True)
+                plt.legend()
+                plt.tight_layout()
+                outpath = save_dir / f"{stage_name}_{comp_name}.png"
+                plt.savefig(outpath, dpi=150)
+                plt.close()
+
+                # (2) 확대 버전
+                plt.figure()
+                if len(train_series) > 0:
+                    plt.plot(train_series, label="train")
+                if len(valid_series) > 0:
+                    plt.plot(valid_series, label="valid")
+
+                plt.xlabel("Epoch")
+                plt.ylabel(comp_name)
+                plt.title(f"{stage_name} - {comp_name} (zoom)")
+                plt.grid(True)
+                plt.legend()
+
+                _set_ylim_from_series([train_series, valid_series])
+
+                plt.tight_layout()
+                outpath_zoom = save_dir / f"{stage_name}_{comp_name}_zoom.png"
+                plt.savefig(outpath_zoom, dpi=150)
+                plt.close()

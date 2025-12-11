@@ -19,9 +19,9 @@ class DefaultMissingCollator:
 
         # 설정에서 on-batch 모드 사용할지 여부
         self.use_on_batch = dataset.config.data.use_on_batch
+        self.different_mode = dataset.config.data.different_mode
 
     def __call__(self, batch: list[dict[str, Any]]) -> dict[str, torch.Tensor]:
-        # batch: [{"base_idx": i}, {"base_idx": j}, ...]
         base_indices = [b["base_idx"] for b in batch]
 
         xs = []
@@ -46,14 +46,13 @@ class DefaultMissingCollator:
                     for r_i, ratio in enumerate(self.ratios):
                         d = ratio_dict[ratio]
 
-                        X_imp = d["X"][base_idx]     # (S, F)
-                        y = d["y"][base_idx]         # (T,)
-                        bemv = d["bemv"][base_idx]   # (S, F)
+                        X_imp = d["X"][base_idx]
+                        y = d["y"][base_idx]
+                        bemv = d["bemv"][base_idx]
 
                         xs.append(X_imp)
                         ys.append(y)
                         bemvs.append(bemv)
-
                         x_originals.append(x_orig)
 
                         pattern_idx.append(p_i)
@@ -61,47 +60,82 @@ class DefaultMissingCollator:
 
         else:
             # ------------------------------------------------
-            # 일반 모드: 각 base_idx마다
-            # (pattern, ratio) 하나만 랜덤으로 골라서 사용
-            # → (일반적인 랜덤 배치 느낌)
+            # 일반 모드: 각 base_idx마다 하나의 (pattern, ratio)를 사용
+            # different_mode 여부에 따라
+            #   - False: 완전 랜덤 (현재 로직과 동일)
+            #   - True : 배치 내에서 가능한 한 서로 다른 시나리오 사용
             # ------------------------------------------------
             num_patterns = len(self.patterns)
             num_ratios = len(self.ratios)
+            num_scenarios = num_patterns * num_ratios
 
-            for base_idx in base_indices:
-                x_orig = self.original_X[base_idx]
+            if self.different_mode:
+                # 가능한 모든 (pattern, ratio) 조합 생성
+                scenario_pairs: list[tuple[int, int]] = []
+                for p_i in range(num_patterns):
+                    for r_i in range(num_ratios):
+                        scenario_pairs.append((p_i, r_i))
 
-                # 패턴, ratio 인덱스를 랜덤 샘플링
-                p_i = np.random.randint(num_patterns)
-                r_i = np.random.randint(num_ratios)
+                # 무작위 순열
+                perm = np.random.permutation(num_scenarios)
 
-                pattern = self.patterns[p_i]
-                pattern_v = pattern.value
-                ratio = self.ratios[r_i]
+                for i, base_idx in enumerate(base_indices):
+                    x_orig = self.original_X[base_idx]
 
-                d = self.imputed_dict[pattern_v][ratio]
+                    # 시나리오 인덱스 선택 (시나리오 수보다 배치가 크면 순환)
+                    s_idx = perm[i % num_scenarios]
+                    p_i, r_i = scenario_pairs[s_idx]
 
-                X_imp = d["X"][base_idx]     # (S, F)
-                y = d["y"][base_idx]         # (T,)
-                bemv = d["bemv"][base_idx]   # (S, F)
+                    pattern = self.patterns[p_i]
+                    pattern_v = pattern.value
+                    ratio = self.ratios[r_i]
 
-                xs.append(X_imp)
-                ys.append(y)
-                bemvs.append(bemv)
+                    d = self.imputed_dict[pattern_v][ratio]
 
-                x_originals.append(x_orig)
+                    X_imp = d["X"][base_idx]
+                    y = d["y"][base_idx]
+                    bemv = d["bemv"][base_idx]
 
-                pattern_idx.append(p_i)
-                ratio_idx.append(r_i)
+                    xs.append(X_imp)
+                    ys.append(y)
+                    bemvs.append(bemv)
+                    x_originals.append(x_orig)
 
-        x = torch.from_numpy(np.stack(xs, axis=0)).to(torch.float32)   # (B' , S, F)
-        y = torch.from_numpy(np.stack(ys, axis=0)).long()              # (B' , T)
+                    pattern_idx.append(p_i)
+                    ratio_idx.append(r_i)
+
+            else:
+                # 기존 랜덤 샘플링 방식 (그대로 유지)
+                for base_idx in base_indices:
+                    x_orig = self.original_X[base_idx]
+
+                    p_i = np.random.randint(num_patterns)
+                    r_i = np.random.randint(num_ratios)
+
+                    pattern = self.patterns[p_i]
+                    pattern_v = pattern.value
+                    ratio = self.ratios[r_i]
+
+                    d = self.imputed_dict[pattern_v][ratio]
+
+                    X_imp = d["X"][base_idx]
+                    y = d["y"][base_idx]
+                    bemv = d["bemv"][base_idx]
+
+                    xs.append(X_imp)
+                    ys.append(y)
+                    bemvs.append(bemv)
+                    x_originals.append(x_orig)
+
+                    pattern_idx.append(p_i)
+                    ratio_idx.append(r_i)
+
+        x = torch.from_numpy(np.stack(xs, axis=0)).to(torch.float32)
+        y = torch.from_numpy(np.stack(ys, axis=0)).long()
         bemv = torch.from_numpy(np.stack(bemvs, axis=0)).to(torch.float32)
-
         x_originals = torch.from_numpy(np.stack(x_originals, axis=0)).to(torch.float32)
-
-        pattern_idx = torch.tensor(pattern_idx, dtype=torch.long)      # (B',)
-        ratio_idx = torch.tensor(ratio_idx, dtype=torch.long)          # (B',)
+        pattern_idx = torch.tensor(pattern_idx, dtype=torch.long)
+        ratio_idx = torch.tensor(ratio_idx, dtype=torch.long)
 
         return {
             "x": x,

@@ -1,12 +1,32 @@
 {
   "models": [
     {
-      "label": "XGBoost NoAug/Z",
-      "dir": "outputs_seeds/2025-12-04_11-16-26_xgboost_0.0_to_0.0_0.0_step_single_mcar_zero/test_1"
-    },
-    {
       "label": "XGBoost RMAug/Z",
       "dir": "outputs_seeds/2025-12-04_11-22-26_xgboost_0.0_to_0.9_0.1_step_multi_mcar_zero/test_0"
+    },
+    {
+      "label": "LightGBM RMAug/Z",
+      "dir": "outputs_seeds/2025-12-08_10-24-19_lightgbm_0.0_to_0.9_0.1_step_multi_mcar_zero/test_0"
+    },
+    {
+      "label": "MLP RMAug/Z",
+      "dir": "outputs_seeds/2025-12-04_12-03-51_mlp_0.0_to_0.9_0.1_step_multi_mcar_zero/test_0"
+    },
+    {
+      "label": "FT-Transformer RMAug/Z",
+      "dir": "outputs_seeds/2025-12-04_12-30-23_fttransformer_0.0_to_0.9_0.1_step_multi_mcar_zero/test_0"
+    },
+    {
+      "label": "DeepTLF RMAug/Z",
+      "dir": "outputs_seeds/2025-12-05_07-11-31_deeptlf_0.0_to_0.9_0.1_step_multi_mcar_zero/test_0"
+    },
+    {
+      "label": "TabNet RMAug/Z",
+      "dir": "outputs_seeds/2025-12-05_08-20-50_tabnet_0.0_to_0.9_0.1_step_multi_mcar_zero/test_0"
+    },
+    {
+      "label": "TabPFN RMAug/Z",
+      "dir": "outputs_seeds/2025-12-08_08-17-44_tabpfn_0.0_to_0.9_0.1_step_multi_mcar_zero/test_0"
     }
   ]
 }

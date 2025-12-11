@@ -25,8 +25,12 @@ class ModelType(Enum):
     TABPFN = "tabpfn"
 
 
+    #
+    REGAE = "regae"
+
 
     #
+    # (deprecated)
     MDBE_1 = "mdbe_1"
     MDBE_1_BALANCED = "mdbe_1_balanced"
     MDBE_1_E2E = "mdbe_1_e2e"
@@ -34,6 +38,7 @@ class ModelType(Enum):
     MDBE_1_XGB = "mdbe_1_xgb"
 
     MDBE_2 = "mdbe_2"
+
 
 
     MDBE_3_E2E = "mdbe_3_e2e"

@@ -40,7 +40,9 @@ def get_resmlp_adapter():
     from src.models.resmlp_adapter import ResMLPAdapter
     return ResMLPAdapter
 
-
+def get_regae_adapter():
+    from src.models.ReGAE_adapter import ReGAEAdapter
+    return ReGAEAdapter
 
 # def get_mdbe_1_adapter():
 #     from src.models.MDBE_1_adapter import MDBE_1_Adapter
@@ -69,6 +71,8 @@ MODEL_MAP = {
     ModelType.MLP: get_mlp_adapter(),
     ModelType.RESMLP: get_resmlp_adapter(),
 
+    # ReGAE
+    ModelType.REGAE: get_regae_adapter(),
 
     # # Custom MDBE 계열
     # ModelType.MDBE_1: get_mdbe_1_adapter(),

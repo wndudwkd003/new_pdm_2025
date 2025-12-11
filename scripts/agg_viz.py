@@ -33,6 +33,23 @@ class ModelSeedAgg:
     metrics: Dict[str, Dict[str, np.ndarray]]
 
 
+def _get_family_name(label: str) -> str:
+    """
+    모델 라벨에서 '베이스 모델 이름'만 뽑아냅니다.
+    예:
+      "XGBoost NoAug/Z"      -> "XGBoost"
+      "MLP RMAug/Z"          -> "MLP"
+      "FT-Transformer NoAug" -> "FT-Transformer"
+
+    기준: 첫 번째 공백 앞까지를 family 로 사용.
+    """
+    parts = label.split()
+    if not parts:
+        return label
+    return parts[0]
+
+
+
 
 def _parse_total_config(cfg: Dict) -> List[Dict]:
     """
@@ -267,12 +284,10 @@ def _check_compatibility(models_agg: List[ModelSeedAgg]):
                 f"{base_metrics} vs {metrics}"
             )
 
-
-
-
 def plot_ratio_curves_multi(
     models_agg: List[ModelSeedAgg],
     out_dir: Path,
+    only_model_legends: bool = False,
 ):
     """
     여러 모델에 대해, ratio 별 scalar metric 을 한 그래프에 그립니다.
@@ -280,30 +295,73 @@ def plot_ratio_curves_multi(
     - x축: missing ratio
     - 각 모델: mean (seed 평균)을 선으로 그림
     - 각 모델: seed 최소~최대 범위를 동일 색상으로 fill_between 음영 처리
+    - 색상:
+        같은 family(예: "XGBoost") 에 속한 모델들은 같은 색
+    - 선 스타일:
+        같은 family 내에서 NoAug / RMAug 등은
+        solid / dashed / dashdot / dotted 등으로 구분
     - 두 버전 저장:
         1) y축 0~1 고정
-        2) 분위수 기반 zoom (_set_ylim_from_values 재사용)
+        2) min/max 기반 zoom (극단값 포함, multi-model)
     """
     if len(models_agg) == 0:
         return
 
-    # 호환성 검사 (ratio / metric 동일 여부)
     _check_compatibility(models_agg)
 
     base = models_agg[0]
     ratios_arr = np.asarray(base.ratios, dtype=float)
     metric_keys = sorted(base.metrics.keys())
 
-    viz_dir = out_dir / "by_ratio"
+    # family / color / linestyle 셋업 부분은 그대로
+    families: List[str] = []
+    for m in models_agg:
+        fam = _get_family_name(m.label)
+        if fam not in families:
+            families.append(fam)
+
+    color_cycle = plt.rcParams.get("axes.prop_cycle", None)
+    if color_cycle is not None:
+        colors = color_cycle.by_key().get("color", [])
+    else:
+        colors = []
+    if not colors:
+        colors = [f"C{i}" for i in range(10)]
+
+    family_to_color: Dict[str, str] = {}
+    for idx, fam in enumerate(families):
+        family_to_color[fam] = colors[idx % len(colors)]
+
+    linestyle_cycle = ["solid", "dashed", "dashdot", "dotted"]
+    family_style_counter: Dict[str, int] = {}
+    model_style: Dict[str, Dict[str, str]] = {}
+
+    for m in models_agg:
+        fam = _get_family_name(m.label)
+        color = family_to_color[fam]
+
+        idx = family_style_counter.get(fam, 0)
+        linestyle = linestyle_cycle[idx % len(linestyle_cycle)]
+        family_style_counter[fam] = idx + 1
+
+        model_style[m.label] = {
+            "color": color,
+            "linestyle": linestyle,
+        }
+
+        viz_dir = out_dir / "by_ratio"
     viz_dir.mkdir(parents=True, exist_ok=True)
 
     for metric_key in metric_keys:
+        # zoom용으로 모든 mean/min/max 값을 모아둠
         all_values_for_zoom: List[float] = []
 
         # ---------------------------
         # 1) y축 0~1 고정 버전
         # ---------------------------
-        plt.figure(figsize=(6, 4))
+        fig, ax = plt.subplots(figsize=(7, 4))
+
+        used_families_fixed = set()
 
         for m in models_agg:
             stats = m.metrics[metric_key]
@@ -311,30 +369,72 @@ def plot_ratio_curves_multi(
             mins_arr = stats["mins"]
             maxs_arr = stats["maxs"]
 
-            line, = plt.plot(ratios_arr, means_arr, marker="o", label=m.label)
-            color = line.get_color()
-            plt.fill_between(ratios_arr, mins_arr, maxs_arr, alpha=0.15, color=color)
+            style = model_style[m.label]
 
+            # --- 범례에 들어갈 라벨 결정 ---
+            if only_model_legends:
+                fam = _get_family_name(m.label)
+                if fam in used_families_fixed:
+                    legend_label = f"_{fam}"  # legend에서 무시되는 라벨
+                else:
+                    legend_label = fam
+                    used_families_fixed.add(fam)
+            else:
+                legend_label = m.label
+            # -----------------------------
+
+            ax.plot(
+                ratios_arr,
+                means_arr,
+                marker="o",
+                linewidth=2.0,
+                markersize=4,
+                label=legend_label,
+                color=style["color"],
+                linestyle=style["linestyle"],
+                alpha=0.85,  # 선도 약간 투명하게
+            )
+            ax.fill_between(
+                ratios_arr,
+                mins_arr,
+                maxs_arr,
+                alpha=0.15,
+                color=style["color"],
+            )
+
+            # zoom 계산용으로 mean/min/max 모두 저장
             all_values_for_zoom.extend(means_arr.tolist())
             all_values_for_zoom.extend(mins_arr.tolist())
             all_values_for_zoom.extend(maxs_arr.tolist())
 
-        plt.xlabel("missing ratio")
-        plt.ylabel(metric_key)
-        plt.title(f"{metric_key} vs missing ratio (fixed 0-1, multi-model)")
-        plt.grid(True, linestyle="--", alpha=0.5)
-        plt.ylim(0.0, 1.0)
-        plt.legend()
-        plt.tight_layout()
+        ax.set_xlabel("missing ratio")
+        ax.set_ylabel(metric_key)
+        ax.set_title(f"{metric_key} vs missing ratio (fixed 0-1, multi-model)")
+        ax.grid(True, linestyle="--", alpha=0.5)
+        ax.set_ylim(0.0, 1.0)
 
+        leg = ax.legend(
+            loc="center left",
+            bbox_to_anchor=(1.02, 0.5),
+            borderaxespad=0.0,
+        )
+
+        fig.tight_layout()
         fname_fixed = f"{metric_key}_ratio_fixed01_multi.png"
-        plt.savefig(viz_dir / fname_fixed, dpi=150)
-        plt.close()
+        fig.savefig(
+            viz_dir / fname_fixed,
+            dpi=150,
+            bbox_inches="tight",
+            bbox_extra_artists=(leg,),
+        )
+        plt.close(fig)
 
         # ---------------------------
-        # 2) zoom 버전
+        # 2) zoom 버전 (extrema 포함)
         # ---------------------------
-        plt.figure(figsize=(6, 4))
+        fig, ax = plt.subplots(figsize=(7, 4))
+
+        used_families_zoom = set()
 
         for m in models_agg:
             stats = m.metrics[metric_key]
@@ -342,23 +442,81 @@ def plot_ratio_curves_multi(
             mins_arr = stats["mins"]
             maxs_arr = stats["maxs"]
 
-            line, = plt.plot(ratios_arr, means_arr, marker="o", label=m.label)
-            color = line.get_color()
-            plt.fill_between(ratios_arr, mins_arr, maxs_arr, alpha=0.15, color=color)
+            style = model_style[m.label]
 
-        plt.xlabel("missing ratio")
-        plt.ylabel(metric_key)
-        plt.title(f"{metric_key} vs missing ratio (zoom, multi-model)")
-        plt.grid(True, linestyle="--", alpha=0.5)
+            # --- 범례에 들어갈 라벨 결정 ---
+            if only_model_legends:
+                fam = _get_family_name(m.label)
+                if fam in used_families_zoom:
+                    legend_label = f"_{fam}"
+                else:
+                    legend_label = fam
+                    used_families_zoom.add(fam)
+            else:
+                legend_label = m.label
+            # -----------------------------
 
-        _set_ylim_from_values(all_values_for_zoom)
+            ax.plot(
+                ratios_arr,
+                means_arr,
+                marker="o",
+                linewidth=2.0,
+                markersize=4,
+                label=legend_label,
+                color=style["color"],
+                linestyle=style["linestyle"],
+                alpha=0.85,  # 여기도 동일하게 약간 투명
+            )
+            ax.fill_between(
+                ratios_arr,
+                mins_arr,
+                maxs_arr,
+                alpha=0.15,
+                color=style["color"],
+            )
 
-        plt.legend()
-        plt.tight_layout()
+        ax.set_xlabel("missing ratio")
+        ax.set_ylabel(metric_key)
+        ax.set_title(f"{metric_key} vs missing ratio (zoom, multi-model)")
+        ax.grid(True, linestyle="--", alpha=0.5)
 
+        # ==== 여기부터 y축 범위 계산을 직접 수행 ====
+        valid_values = [v for v in all_values_for_zoom if not np.isnan(v)]
+        if len(valid_values) > 0:
+            vmin = min(valid_values)
+            vmax = max(valid_values)
+
+            if vmin == vmax:
+                margin = 0.02 if vmax == 0.0 else abs(vmax) * 0.02
+            else:
+                margin = (vmax - vmin) * 0.05
+
+            ymin = vmin - margin
+            ymax = vmax + margin
+
+            lower_name = metric_key.lower()
+            if any(k in lower_name for k in ["acc", "f1", "prec", "recall", "auc"]):
+                ymin = max(0.0, ymin)
+                ymax = min(1.0, ymax)
+
+            ax.set_ylim(ymin, ymax)
+        # ==== 여기까지 ====
+
+        leg = ax.legend(
+            loc="center left",
+            bbox_to_anchor=(1.02, 0.5),
+            borderaxespad=0.0,
+        )
+
+        fig.tight_layout()
         fname_zoom = f"{metric_key}_ratio_zoom_multi.png"
-        plt.savefig(viz_dir / fname_zoom, dpi=150)
-        plt.close()
+        fig.savefig(
+            viz_dir / fname_zoom,
+            dpi=150,
+            bbox_inches="tight",
+            bbox_extra_artists=(leg,),
+        )
+        plt.close(fig)
 
 
 
@@ -406,7 +564,8 @@ def main():
     _save_total_json(models_agg, out_dir, total_json_path)
 
     # multi-model ratio 곡선 플롯
-    plot_ratio_curves_multi(models_agg, out_dir)
+    plot_ratio_curves_multi(models_agg, out_dir, only_model_legends=True)
+
 
 
 if __name__ == "__main__":

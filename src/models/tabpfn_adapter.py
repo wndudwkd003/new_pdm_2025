@@ -129,9 +129,11 @@ class TabPFNAdapter(BaseModelAdapter):
         save_dir = path / "save"
         save_dir.mkdir(parents=True, exist_ok=True)
 
-        model_name = "tabpfn_model.pfz"
+        # TabPFN이 요구하는 확장자: .tabpfn_fit
+        model_name = "tabpfn_model.tabpfn_fit"
         save_path = save_dir / model_name
 
+        # 이 함수 내부에서 save_fitted_tabpfn_model을 호출함
         self.model.save_fit_state(str(save_path))
 
         meta = {
@@ -141,6 +143,7 @@ class TabPFNAdapter(BaseModelAdapter):
         self.save_meta(save_dir, meta)
         return save_path
 
+
     def load(
         self,
         path: Path
@@ -148,11 +151,16 @@ class TabPFNAdapter(BaseModelAdapter):
         save_dir = path / Split.TRAIN.value / "save"
         meta = self.load_meta(save_dir)
 
-        model_path = meta["model_path"]
+        model_path = Path(meta["model_path"])
+
+        if not model_path.exists():
+            print(f"[TabPFNAdapter] fitted model not found: {model_path}")
+            return False
 
         self.model = TabPFNClassifier.load_from_fit_state(
             str(model_path),
-            device=self.config.train.device
+            device=self.config.train.device,
         )
 
         return True
+

@@ -20,12 +20,13 @@ class Data:
     data_load_workers: int = 10
     num_workers: int = 5
     missing_patterns: list[MissingPattern] = field(default_factory=lambda: [MissingPattern.MCAR])
-    missing_scenario: MissingScenario = MissingScenario.SINGLE # SINGLE, MULTI
-    target_missing_ratio: float = 0.0 # 0.5 0.9
+    missing_scenario: MissingScenario = MissingScenario.MULTI # SINGLE, MULTI
+    target_missing_ratio: float = 0.9 # 0.5 0.9
     start_missing_ratio: float  = 0.0
-    step_missing_ratio: float   = 0.0 # 0.1
+    step_missing_ratio: float   = 0.1 # 0.1
     impute_method: ImputeMethod = ImputeMethod.ZERO
-    use_on_batch: bool = True
+    use_on_batch: bool = False
+    different_mode: bool = False   # 새로 추가
     # stack_mode: StackMode
 
 @dataclass
@@ -43,7 +44,7 @@ class Train:
 
 @dataclass
 class Model:
-    model: ModelType = ModelType.MLP
+    model: ModelType = ModelType.REGAE
     stage: StageType = StageType.NONE
     other_prefix: str = ""
     save_work_dir: str = ""
@@ -59,6 +60,12 @@ class Model:
     lgbm_objective: str = "multiclass"
     lgbm_metric: str = "multi_logloss"
     lgbm_class_weight: str = "balanced"
+
+    # ReGAE
+    lambda_class: float = 1.0
+    lambda_recon: float = 1.0
+    lambda_view: float = 1.0
+    lambda_rscore: float = 1.0
 
 
 
