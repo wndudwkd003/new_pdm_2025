@@ -2,17 +2,16 @@ from enum import Enum
 from dataclasses import dataclass, field
 
 
-
 class DatasetType(Enum):
     MPTMS = "datasets/MPTMS/processed_data"
     CMAPSS = "datasets/c-mapss/processed_data"
     FORD = "datasets/fordengine/processed_data"
 
+
 class ModelType(Enum):
     XGBOOST = "xgboost"
     LIGHTGBM = "lightgbm"
     RANDOMFOREST = "randomforest"
-
 
     #
 
@@ -24,10 +23,9 @@ class ModelType(Enum):
     DEEPTLF = "deeptlf"
     TABPFN = "tabpfn"
 
-
     #
     REGAE = "regae"
-
+    REGAE_STAGE = "regae_stage"
 
     #
     # (deprecated)
@@ -39,12 +37,7 @@ class ModelType(Enum):
 
     MDBE_2 = "mdbe_2"
 
-
-
     MDBE_3_E2E = "mdbe_3_e2e"
-
-
-
 
 
 class StageType(Enum):
@@ -52,11 +45,13 @@ class StageType(Enum):
     PRETRAIN = "pretrain"
     FINETUNE = "finetune"
 
+
 class ModelSize(Enum):
     NONE = ""
     SMALL = "small"
     MEDIUM = "medium"
     LARGE = "large"
+
 
 class Split(Enum):
     TRAIN = "train"

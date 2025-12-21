@@ -22,14 +22,12 @@ from src.imputer.zero_imputer import ZeroImputer
 from src.datasets.dl_collator import DefaultMissingCollator
 
 from src.params.data_model import Split, DatasetType
-from src.params.scenario import (
-    MissingScenario, StackMode,
-    MissingPattern, ImputeMethod
-)
+from src.params.scenario import MissingScenario, StackMode, MissingPattern, ImputeMethod
 
 from src.datasets.zscore_meta import ZScoreMeta
 
 
+from src.datasets.balanced_batch_sampler import BalancedClassBatchSampler
 
 
 MISSING_MAP = {
@@ -41,8 +39,9 @@ IMPUTER_MAP = {
     ImputeMethod.ZERO: ZeroImputer,
 }
 
+
 def _apply_missing_single_ratio(args):
-    ratio, X, seed, pattern = args   # pattern: MissingPattern Enum
+    ratio, X, seed, pattern = args  # pattern: MissingPattern Enum
 
     Adapter = MISSING_MAP[pattern]
     adapter = Adapter(
@@ -54,11 +53,10 @@ def _apply_missing_single_ratio(args):
     return ratio, X_missing
 
 
-
 def _load_single_sample(args):
     idx, sample, skip_header = args
 
-    csv_paths   = sample["input_files"]["csvs"]
+    csv_paths = sample["input_files"]["csvs"]
     label_paths = sample["target_files"]["labels"]
 
     rows = []
@@ -85,8 +83,6 @@ def _load_single_sample(args):
     return idx, x_ts, y_vec
 
 
-
-
 class Datasets(Dataset):
     def __init__(
         self,
@@ -108,8 +104,6 @@ class Datasets(Dataset):
         self.imputer_dict_external = imputer_dict
         self.imputer_dict = None
 
-
-
         # CSV 데이터 로드
         X_raw, y_raw, meta = self.load_data()
         self.meta = meta
@@ -128,9 +122,6 @@ class Datasets(Dataset):
         # Z-score 적용
         self.imputed_dict = self.apply_zscore(self.zscore_meta)
 
-
-
-
     def numpy_from_samples(self, samples: list[dict]):
         ds_type = self.config.data.datasets
         print(f"DatasetType: {ds_type.name}")
@@ -143,7 +134,6 @@ class Datasets(Dataset):
         else:
             raise ValueError(f"지원하지 않는 DatasetType: {ds_type}")
 
-
     def numpy_from_samples_mptms(self, samples: list[dict]):
         # 헤더 스킵 여부는 그대로 설정 (자동 감지 안 함)
         skip_header = 1 if self.config.data.skip_header else 0
@@ -154,16 +144,13 @@ class Datasets(Dataset):
         # ProcessPoolExecutor를 사용해서 병렬로 샘플 로딩
         num_workers = self.config.data.data_load_workers
 
-        args_iter = [
-            (idx, sample, skip_header)
-            for idx, sample in enumerate(samples)
-        ]
+        args_iter = [(idx, sample, skip_header) for idx, sample in enumerate(samples)]
 
         with ProcessPoolExecutor(max_workers=num_workers) as executor:
             for idx, x_ts, y_vec in tqdm(
                 executor.map(_load_single_sample, args_iter),
                 total=num_samples,
-                desc=f"Loading CSV/labels ({self.split.value})"
+                desc=f"Loading CSV/labels ({self.split.value})",
             ):
                 X_results[idx] = (x_ts, y_vec)
 
@@ -193,7 +180,6 @@ class Datasets(Dataset):
             y_raw = sample["target"]["y"]
             y_vec = np.asarray(y_raw, dtype=np.int64)
 
-
             X_list.append(x_ts)
             y_list.append(y_vec)
 
@@ -201,9 +187,6 @@ class Datasets(Dataset):
         y = np.stack(y_list, axis=0)
 
         return X, y
-
-
-
 
     # ----------------- 필수 메서드 -----------------
 
@@ -256,8 +239,7 @@ class Datasets(Dataset):
                 num_workers = self.config.data.data_load_workers
 
                 args_iter = [
-                    (ratio, X, self.config.train.seed, pattern)
-                    for ratio in ratios
+                    (ratio, X, self.config.train.seed, pattern) for ratio in ratios
                 ]
 
                 with ProcessPoolExecutor(max_workers=num_workers) as executor:
@@ -295,9 +277,6 @@ class Datasets(Dataset):
 
         return missing_dict
 
-
-
-
     def apply_imputation(
         self,
         missing_dict: dict,
@@ -318,7 +297,9 @@ class Datasets(Dataset):
         use_external = self.imputer_dict_external is not None
 
         # 패턴별로 impute
-        for pattern in tqdm(self.config.data.missing_patterns, desc=f"Imputing ({impute_method.name})"):
+        for pattern in tqdm(
+            self.config.data.missing_patterns, desc=f"Imputing ({impute_method.name})"
+        ):
             pattern_v = pattern.value
             ratio_dict = missing_dict[pattern_v]
 
@@ -362,9 +343,6 @@ class Datasets(Dataset):
 
         return imputed_dict
 
-
-
-
     def get_data_for_gbdt(self):
         X_list: list[np.ndarray] = []
         y_list: list[np.ndarray] = []
@@ -377,17 +355,16 @@ class Datasets(Dataset):
             for ratio in self.ratios:
                 d = ratio_dict[ratio]
 
-                X_imp = d["X"]   # (N, F)
-                y = d["y"]       # (N,)
+                X_imp = d["X"]  # (N, F)
+                y = d["y"]  # (N,)
 
                 X_list.append(X_imp)
                 y_list.append(y)
 
-        X_cat = np.concatenate(X_list, axis=0)   # (M, F)
-        y_cat = np.concatenate(y_list, axis=0)   # (M,)
+        X_cat = np.concatenate(X_list, axis=0)  # (M, F)
+        y_cat = np.concatenate(y_list, axis=0)  # (M,)
 
         return X_cat, y_cat
-
 
     def get_loader_for_deep(
         self,
@@ -407,6 +384,28 @@ class Datasets(Dataset):
 
         return loader
 
+    # def get_loader_for_deep(self, shuffle: bool = True):
+    #     self.build_dl_view()
+
+    #     collator = DefaultMissingCollator(self)
+
+    #     y_base = self.imputed_dict["original"]["y"]  # (N_base,)
+    #     batch_sampler = BalancedClassBatchSampler(
+    #         labels=y_base,
+    #         batch_size=self.config.train.batch_size,  # 여기 batch_size는 'base' 기준
+    #         min_per_class=2,  # cls contrast가 있으면 2 이상 권장
+    #         classes_per_batch=None,  # 자동: batch_size//min_per_class
+    #         seed=self.config.train.seed if self.config.train.seed >= 0 else 42,
+    #         drop_last=True,
+    #     )
+
+    #     loader = DataLoader(
+    #         self,
+    #         batch_sampler=batch_sampler,  # 핵심
+    #         num_workers=self.config.data.num_workers,
+    #         collate_fn=collator,
+    #     )
+    #     return loader
 
     def build_dl_view(self):
         X_list: list[np.ndarray] = []
@@ -422,7 +421,9 @@ class Datasets(Dataset):
             pattern_v = pattern.value
             ratio_dict = self.imputed_dict[pattern_v]
 
-            for r_idx, ratio in enumerate(tqdm(ratios, desc=f"Building DL view ({pattern.name})", leave=False)):
+            for r_idx, ratio in enumerate(
+                tqdm(ratios, desc=f"Building DL view ({pattern.name})", leave=False)
+            ):
                 d = ratio_dict[ratio]
 
                 X_imp = d["X"]
@@ -454,7 +455,6 @@ class Datasets(Dataset):
 
     def get_num_class(self):
         return self.meta.num_class
-
 
     def load_data(self):
         base_dir = Path(self.data_dir)
@@ -491,7 +491,6 @@ class Datasets(Dataset):
         # (N, F), (N, )
         return X, y, meta
 
-
     def make_zscore_data(self) -> ZScoreMeta:
         X_list: list[np.ndarray] = []
 
@@ -501,16 +500,16 @@ class Datasets(Dataset):
             ratio_dict = self.imputed_dict[pattern_v]
 
             for ratio in self.ratios:
-                X_imp = ratio_dict[ratio]["X"]   # (N, F)
+                X_imp = ratio_dict[ratio]["X"]  # (N, F)
                 X_list.append(X_imp)
 
-        X_all = np.concatenate(X_list, axis=0)   # (M, F)
+        X_all = np.concatenate(X_list, axis=0)  # (M, F)
 
         mean = X_all.mean(axis=0).astype(np.float32)  # (F,)
-        std = X_all.std(axis=0).astype(np.float32)    # (F,)
+        std = X_all.std(axis=0).astype(np.float32)  # (F,)
 
         # 분산 0인 경우 1로 치환 (branch 없이 mask로 처리)
-        mask = (std == 0.0)
+        mask = std == 0.0
         std = std + mask.astype(np.float32)
 
         return ZScoreMeta(
@@ -518,13 +517,12 @@ class Datasets(Dataset):
             std=std.tolist(),
         )
 
-
     def apply_zscore(self, zscore_meta: ZScoreMeta):
         mean = np.asarray(zscore_meta.mean, dtype=np.float32)  # (F,)
-        std = np.asarray(zscore_meta.std, dtype=np.float32)    # (F,)
+        std = np.asarray(zscore_meta.std, dtype=np.float32)  # (F,)
 
         # original
-        X0 = self.imputed_dict["original"]["X"]   # (N, F)
+        X0 = self.imputed_dict["original"]["X"]  # (N, F)
         X0 = (X0 - mean) / std
         self.imputed_dict["original"]["X"] = X0
 
@@ -534,14 +532,8 @@ class Datasets(Dataset):
             ratio_dict = self.imputed_dict[pattern_v]
 
             for ratio in self.ratios:
-                X_imp = ratio_dict[ratio]["X"]    # (N, F)
+                X_imp = ratio_dict[ratio]["X"]  # (N, F)
                 X_imp = (X_imp - mean) / std
                 ratio_dict[ratio]["X"] = X_imp
 
         return self.imputed_dict
-
-
-
-
-
-

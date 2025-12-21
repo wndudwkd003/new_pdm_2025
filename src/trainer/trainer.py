@@ -8,7 +8,7 @@ from src.models.base_model_adapter import BaseModelAdapter
 from src.configs.configs import Config
 from src.params.literals import Workspace
 from src.params.data_model import Split, StageType
-from src.params.model_map import MODEL_MAP
+from src.params.model_map import MODEL_MAP, ModelType
 from src.datasets.data_class import Datasets
 from src.utils.eval_viz import (
     save_metrics_artifacts,
@@ -31,15 +31,14 @@ class Trainer:
 
         self.adapter: BaseModelAdapter = MODEL_MAP[self.model_type](config)
 
-
     def get_work_dir(self):
         # 현재 run의 ws 만드는 함수임
         now = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-        mn = self.model_type.value.lower() # model name
+        mn = self.model_type.value.lower()  # model name
 
-        sr = self.config.data.start_missing_ratio       # start ratio
-        tr = self.config.data.target_missing_ratio      # target ratio
-        step = self.config.data.step_missing_ratio      # step ratio
+        sr = self.config.data.start_missing_ratio  # start ratio
+        tr = self.config.data.target_missing_ratio  # target ratio
+        step = self.config.data.step_missing_ratio  # step ratio
 
         stage = self.stage_type.value.lower()
 
@@ -49,7 +48,9 @@ class Trainer:
         other_prefix = f"-{other_prefix}" if other_prefix != "" else ""
 
         missing_scenario = self.config.data.missing_scenario.value
-        missing_patterns = "_".join([p.value for p in self.config.data.missing_patterns])
+        missing_patterns = "_".join(
+            [p.value for p in self.config.data.missing_patterns]
+        )
         impute_method = self.config.data.impute_method.value
 
         seed_txt = f"seed{self.config.train.seed}"
@@ -70,7 +71,6 @@ class Trainer:
 
         return work_dir
 
-
     def run(self, split: Split):
         if split == Split.TRAIN:
             # train 시 작업 디렉토리 생성
@@ -88,10 +88,7 @@ class Trainer:
             imputer_dict = train_ds.imputer_dict
 
             valid_ds = Datasets(
-                self.config,
-                Split.VALID,
-                train_zscore_meta,
-                imputer_dict
+                self.config, Split.VALID, train_zscore_meta, imputer_dict
             )
 
             model_save_dir = self.work_dir / split.value
@@ -107,12 +104,36 @@ class Trainer:
                 print(f"Pre-trained model loaded from {pre_trained_dir}")
 
             results = self.adapter.fit(train_ds, valid_ds)
+
+            if hasattr(self.adapter, "visualize_embeddings"):
+                viz_dir = model_save_dir / "embed_viz"
+                self.adapter.visualize_embeddings(
+                    data=train_ds,
+                    split=Split.TRAIN,
+                    out_dir=viz_dir,
+                    max_points_pca=10000,
+                    max_points_tsne=10000,
+                    perplexity=30,
+                    s_min=0.25,
+                    s_max=1.0,
+                )
+
+                self.adapter.visualize_embeddings(
+                    data=valid_ds,
+                    split=Split.VALID,
+                    out_dir=viz_dir,
+                    max_points_pca=10000,
+                    max_points_tsne=10000,
+                    perplexity=30,
+                    s_min=0.25,
+                    s_max=1.0,
+                )
+
             print(f"Training completed.")
             self.adapter.save(model_save_dir)
 
             results_dir = self.work_dir / "history"
             results_dir.mkdir(parents=True, exist_ok=True)
-
 
         elif split == Split.TEST:
             # test 시 저장된 디렉토리 불러옴
@@ -136,11 +157,22 @@ class Trainer:
 
             results = self.adapter.test(test_ds)
 
+            if hasattr(self.adapter, "visualize_embeddings"):
+                viz_dir = results_dir / "embed_viz"
+                self.adapter.visualize_embeddings(
+                    data=test_ds,
+                    split=Split.TEST,
+                    out_dir=viz_dir,
+                    max_points_pca=10000,
+                    max_points_tsne=10000,
+                    perplexity=30,
+                    s_min=0.25,
+                    s_max=1.0,
+                )
 
         self.save_results(results, results_dir, split)
 
         return results_dir
-
 
     def save_results(self, results: dict, path: Path, split: Split) -> Path:
 
@@ -233,9 +265,6 @@ class Trainer:
 
         return path
 
-
-
-
     def get_next_result_dir(self, prefix: str):
         exist_idx = []
 
@@ -249,7 +278,6 @@ class Trainer:
                 idx = int(idx)
                 exist_idx.append(idx)
 
-
         target_idx = max(exist_idx) + 1 if len(exist_idx) > 0 else 0
 
         dir_name = f"{prefix}_{target_idx}"
@@ -258,10 +286,3 @@ class Trainer:
         result_dir.mkdir(parents=True, exist_ok=True)
 
         return result_dir
-
-
-
-
-
-
-

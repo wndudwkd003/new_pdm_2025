@@ -1,56 +1,81 @@
 from src.params.data_model import ModelType, ModelSize, ModelParams
 
+
 def get_xgb_adapter():
     from src.models.xgboost_adapter import XGBoostAdapter
+
     return XGBoostAdapter
+
 
 def get_lightgbm_adapter():
     from src.models.lightgbm_adapter import LightGBMAdapter
+
     return LightGBMAdapter
+
 
 def get_rf_adapter():
     from src.models.rf_adapter import RandomForestAdapter
+
     return RandomForestAdapter
+
 
 def get_tabtransformer_adapter():
     from src.models.tab_transformer_adapter import TabTransformerAdapter
+
     return TabTransformerAdapter
+
 
 def get_fttransformer_adapter():
     from src.models.fttransformer_adapter import FTTransformerAdapter
+
     return FTTransformerAdapter
+
 
 def get_tabnet_adapter():
     from src.models.tabnet_adapter import TabNetAdapter
+
     return TabNetAdapter
+
 
 def get_deeptlf_adapter():
     from src.models.deeptlf_adapter import DeepTLFAdapter
+
     return DeepTLFAdapter
+
 
 def get_tabfpn_adapter():
     from src.models.tabpfn_adapter import TabPFNAdapter
+
     return TabPFNAdapter
+
 
 def get_mlp_adapter():
     from src.models.mlp_adapter import MLPAdapter
+
     return MLPAdapter
+
 
 def get_resmlp_adapter():
     from src.models.resmlp_adapter import ResMLPAdapter
+
     return ResMLPAdapter
+
 
 def get_regae_adapter():
     from src.models.ReGAE_adapter import ReGAEAdapter
+
     return ReGAEAdapter
+
+
+def get_regae_stage_adapter():
+    from src.models.ReGAE_stage_adapter import ReGAEAdapter
+
+    return ReGAEAdapter
+
 
 # def get_mdbe_1_adapter():
 #     from src.models.MDBE_1_adapter import MDBE_1_Adapter
 #     return MDBE_1_Adapter
-
-
-
-
 
 
 # ─────────────────────────────────────────────
@@ -61,7 +86,6 @@ MODEL_MAP = {
     ModelType.XGBOOST: get_xgb_adapter(),
     ModelType.LIGHTGBM: get_lightgbm_adapter(),
     ModelType.RANDOMFOREST: get_rf_adapter(),
-
     # # Deep 계열
     ModelType.TABTRANSFORMER: get_tabtransformer_adapter(),
     ModelType.FTTRANSFORMER: get_fttransformer_adapter(),
@@ -70,15 +94,13 @@ MODEL_MAP = {
     ModelType.TABPFN: get_tabfpn_adapter(),
     ModelType.MLP: get_mlp_adapter(),
     ModelType.RESMLP: get_resmlp_adapter(),
-
     # ReGAE
     ModelType.REGAE: get_regae_adapter(),
-
+    ModelType.REGAE_STAGE: get_regae_stage_adapter(),
     # # Custom MDBE 계열
     # ModelType.MDBE_1: get_mdbe_1_adapter(),
     # ModelType.MDBE_1_E2E: get_mdbe_1_e2e_adapter(),
 }
-
 
 
 # ─────────────────────────────────────────────
@@ -93,7 +115,6 @@ MODEL_SIZE_MAP = {
         decoder_hidden_dim=8,
         total_layer=1,
     ),
-
     ModelSize.MEDIUM: ModelParams(
         embed_dim=16,
         feature_hidden_dims=[64, 64, 32, 32, 16, 16],
@@ -102,7 +123,6 @@ MODEL_SIZE_MAP = {
         decoder_hidden_dim=16,
         total_layer=2,
     ),
-
     ModelSize.LARGE: ModelParams(
         embed_dim=16,
         feature_hidden_dims=[512, 512, 128, 128, 32, 32],

@@ -11,6 +11,7 @@ from abc import ABC, abstractmethod
 from src.params.data_model import Split
 from src.configs.configs import Config
 
+
 class BaseModelAdapter(ABC):
     def __init__(
         self,
@@ -27,14 +28,12 @@ class BaseModelAdapter(ABC):
     ):
         pass
 
-
     @abstractmethod
     def predict(
         self,
         test_data,
     ):
         pass
-
 
     @abstractmethod
     def save(
@@ -43,14 +42,12 @@ class BaseModelAdapter(ABC):
     ):
         pass
 
-
     @abstractmethod
     def load(
         self,
         path: Path,
     ):
         pass
-
 
     def save_meta(
         self,
@@ -68,8 +65,6 @@ class BaseModelAdapter(ABC):
     ):
         pass
 
-
-
     def load_meta(
         self,
         save_dir: Path,
@@ -84,41 +79,26 @@ class BaseModelAdapter(ABC):
 
         return meta
 
-
-
     def get_deeplearning_utils(self):
         if self.model is None:
             raise ValueError("모델이 초기화되지 않았습니다.")
 
-        optimizer = torch.optim.AdamW(
-            self.model.parameters(),
-            self.config.train.lr
-        )
+        optimizer = torch.optim.AdamW(self.model.parameters(), self.config.train.lr)
 
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
             optimizer,
-            T_max=self.config.train.epochs - 1,
+            T_max=self.config.train.epochs,
             eta_min=self.config.train.lr_min,
         )
 
         return optimizer, scheduler
-
-
 
     def get_desc(
         self,
         model_name: str,
         split: Split,
     ):
-        return F"[{model_name} {split.name}]"
+        return f"[{model_name} {split.name}]"
 
-
-    def get_epoch_message(
-        self,
-        model_name,
-        epoch,
-        train_loss,
-        valid_loss,
-        lr
-    ):
+    def get_epoch_message(self, model_name, epoch, train_loss, valid_loss, lr):
         return f"[{model_name}][Epoch {epoch+1}] Train Loss: {train_loss:.4f} | Valid Loss: {valid_loss:.4f} | LR: {lr:.6f}"

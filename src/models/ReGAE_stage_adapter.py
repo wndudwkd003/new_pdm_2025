@@ -38,6 +38,21 @@ class ReGAEAdapter(BaseModelAdapter):
 
         self.temperature = float(getattr(self.config.train, "temperature", 0.1))
 
+    def _apply_stage_train_hparams(self, stage: int) -> None:
+        if stage == 1:
+            self.config.train.lr = float(self.config.train.lr_stage_1)
+            self.config.train.lr_min = float(self.config.train.lr_min_stage_1)
+        elif stage == 2:
+            self.config.train.lr = float(self.config.train.lr_stage_2)
+            self.config.train.lr_min = float(self.config.train.lr_min_stage_2)
+        else:
+            raise ValueError(f"stage must be 1 or 2, got: {stage}")
+
+    def _get_deeplearning_utils_for_stage(self, stage: int):
+        self._apply_stage_train_hparams(stage)
+        optimizer, scheduler = self.get_deeplearning_utils()
+        return optimizer, scheduler
+
     def fit(
         self,
         train_data: Datasets,
@@ -51,83 +66,175 @@ class ReGAEAdapter(BaseModelAdapter):
 
         self.model = self._get_model(self.input_dim, self.num_class)
 
-        optimizer, scheduler = self.get_deeplearning_utils()
-
-        best_valid_loss = None
-        best_state = None
-        patience = 0
         max_patience = int(self.config.train.early_stopping_rounds)
         num_epochs = int(self.config.train.epochs)
 
-        train_total: list[float] = []
-        valid_total: list[float] = []
+        # -----------------------
+        # Stage 1 history
+        # -----------------------
+        train_total_s1: list[float] = []
+        valid_total_s1: list[float] = []
 
-        train_ce: list[float] = []
-        valid_ce: list[float] = []
+        train_ce_s1: list[float] = []
+        valid_ce_s1: list[float] = []
 
-        train_info: list[float] = []
-        valid_info: list[float] = []
+        train_info_s1: list[float] = []
+        valid_info_s1: list[float] = []
 
-        train_recon: list[float] = []
-        valid_recon: list[float] = []
+        train_recon_s1: list[float] = []
+        valid_recon_s1: list[float] = []
+
+        # -----------------------
+        # Stage 2 history
+        # -----------------------
+        train_total_s2: list[float] = []
+        valid_total_s2: list[float] = []
+
+        train_ce_s2: list[float] = []
+        valid_ce_s2: list[float] = []
+
+        train_info_s2: list[float] = []
+        valid_info_s2: list[float] = []
+
+        train_recon_s2: list[float] = []
+        valid_recon_s2: list[float] = []
+
+        # =========================================================
+        # Stage 1: Info + Recon
+        # =========================================================
+        optimizer_s1, scheduler_s1 = self._get_deeplearning_utils_for_stage(stage=1)
+
+        best_valid_loss_s1 = None
+        best_state_s1 = None
+        patience_s1 = 0
 
         for epoch in range(num_epochs):
             tr = self.run_epoch(
                 loader=tr_loader,
-                optimizer=optimizer,
+                optimizer=optimizer_s1,
                 split=Split.TRAIN,
+                stage=1,
             )
             vl = self.run_epoch(
                 loader=vl_loader,
                 optimizer=None,
                 split=Split.VALID,
+                stage=1,
             )
 
-            lr = float(optimizer.param_groups[0]["lr"])
-
+            lr = float(optimizer_s1.param_groups[0]["lr"])
             print(
-                f"[{self.config.model.model.name} Epoch {epoch + 1}] "
-                f"Train: total={tr['total']:.4f}, ce={tr['ce']:.4f}, info={tr['info']:.4f}, recon={tr['recon']:.4f} | "
-                f"Valid: total={vl['total']:.4f}, ce={vl['ce']:.4f}, info={vl['info']:.4f}, recon={vl['recon']:.4f} | "
+                f"[{self.config.model.model.name} Stage 1 Epoch {epoch + 1}] "
+                f"Train: total={tr['total']:.4f}, info={tr['info']:.4f}, recon={tr['recon']:.4f} | "
+                f"Valid: total={vl['total']:.4f}, info={vl['info']:.4f}, recon={vl['recon']:.4f} | "
                 f"LR: {lr:.6f}"
             )
 
-            train_total.append(tr["total"])
-            valid_total.append(vl["total"])
+            train_total_s1.append(tr["total"])
+            valid_total_s1.append(vl["total"])
 
-            train_ce.append(tr["ce"])
-            valid_ce.append(vl["ce"])
+            train_ce_s1.append(tr["ce"])
+            valid_ce_s1.append(vl["ce"])
 
-            train_info.append(tr["info"])
-            valid_info.append(vl["info"])
+            train_info_s1.append(tr["info"])
+            valid_info_s1.append(vl["info"])
 
-            train_recon.append(tr["recon"])
-            valid_recon.append(vl["recon"])
+            train_recon_s1.append(tr["recon"])
+            valid_recon_s1.append(vl["recon"])
 
-            scheduler.step()
+            scheduler_s1.step()
 
-            if best_valid_loss is None or vl["total"] < best_valid_loss:
-                best_valid_loss = vl["total"]
-                patience = 0
-                best_state = {k: v.cpu() for k, v in self.model.state_dict().items()}
+            if best_valid_loss_s1 is None or vl["total"] < best_valid_loss_s1:
+                best_valid_loss_s1 = vl["total"]
+                patience_s1 = 0
+                best_state_s1 = {k: v.cpu() for k, v in self.model.state_dict().items()}
             else:
-                patience += 1
+                patience_s1 += 1
 
-            if patience >= max_patience:
+            if patience_s1 >= max_patience:
                 print(
-                    f"[{self.config.model.model.name}] Early stopping at epoch {epoch + 1}"
+                    f"[{self.config.model.model.name}] Stage 1 early stopping at epoch {epoch + 1}"
                 )
                 break
 
-        if best_state is not None and self.model is not None:
-            self.model.load_state_dict(best_state)
+        if best_state_s1 is not None and self.model is not None:
+            self.model.load_state_dict(best_state_s1)
             self.model.to(self.device)
 
+        # =========================================================
+        # Stage 2: CE only (fine-tune on missing input)
+        # =========================================================
+        optimizer_s2, scheduler_s2 = self._get_deeplearning_utils_for_stage(stage=2)
+
+        best_valid_loss_s2 = None
+        best_state_s2 = None
+        patience_s2 = 0
+
+        for epoch in range(num_epochs):
+            tr = self.run_epoch(
+                loader=tr_loader,
+                optimizer=optimizer_s2,
+                split=Split.TRAIN,
+                stage=2,
+            )
+            vl = self.run_epoch(
+                loader=vl_loader,
+                optimizer=None,
+                split=Split.VALID,
+                stage=2,
+            )
+
+            lr = float(optimizer_s2.param_groups[0]["lr"])
+            print(
+                f"[{self.config.model.model.name} Stage 2 Epoch {epoch + 1}] "
+                f"Train: total={tr['total']:.4f}, ce={tr['ce']:.4f} | "
+                f"Valid: total={vl['total']:.4f}, ce={vl['ce']:.4f} | "
+                f"LR: {lr:.6f}"
+            )
+
+            train_total_s2.append(tr["total"])
+            valid_total_s2.append(vl["total"])
+
+            train_ce_s2.append(tr["ce"])
+            valid_ce_s2.append(vl["ce"])
+
+            train_info_s2.append(tr["info"])
+            valid_info_s2.append(vl["info"])
+
+            train_recon_s2.append(tr["recon"])
+            valid_recon_s2.append(vl["recon"])
+
+            scheduler_s2.step()
+
+            if best_valid_loss_s2 is None or vl["total"] < best_valid_loss_s2:
+                best_valid_loss_s2 = vl["total"]
+                patience_s2 = 0
+                best_state_s2 = {k: v.cpu() for k, v in self.model.state_dict().items()}
+            else:
+                patience_s2 += 1
+
+            if patience_s2 >= max_patience:
+                print(
+                    f"[{self.config.model.model.name}] Stage 2 early stopping at epoch {epoch + 1}"
+                )
+                break
+
+        if best_state_s2 is not None and self.model is not None:
+            self.model.load_state_dict(best_state_s2)
+            self.model.to(self.device)
+
+        # =========================================================
+        # Evaluate (after Stage 2)
+        # =========================================================
         _, tr_preds, tr_labels, _, _ = self.predict(tr_loader, split=Split.TRAIN)
         _, vl_preds, vl_labels, _, _ = self.predict(vl_loader, split=Split.VALID)
 
         train_metrics = compute_classification_metrics(tr_labels, tr_preds)
         valid_metrics = compute_classification_metrics(vl_labels, vl_preds)
+
+        # 기존 schema 유지: total curve는 stage1 + stage2를 이어붙임
+        train_total = train_total_s1 + train_total_s2
+        valid_total = valid_total_s1 + valid_total_s2
 
         metric_name = "total_loss"
         tasks = [
@@ -140,16 +247,28 @@ class ReGAEAdapter(BaseModelAdapter):
         components = {
             "stage1": {
                 "train": {
-                    "ce": train_ce,
-                    "info": train_info,
-                    "recon": train_recon,
+                    "ce": train_ce_s1,
+                    "info": train_info_s1,
+                    "recon": train_recon_s1,
                 },
                 "valid": {
-                    "ce": valid_ce,
-                    "info": valid_info,
-                    "recon": valid_recon,
+                    "ce": valid_ce_s1,
+                    "info": valid_info_s1,
+                    "recon": valid_recon_s1,
                 },
-            }
+            },
+            "stage2": {
+                "train": {
+                    "ce": train_ce_s2,
+                    "info": train_info_s2,
+                    "recon": train_recon_s2,
+                },
+                "valid": {
+                    "ce": valid_ce_s2,
+                    "info": valid_info_s2,
+                    "recon": valid_recon_s2,
+                },
+            },
         }
 
         results = {
@@ -170,14 +289,18 @@ class ReGAEAdapter(BaseModelAdapter):
         loader: DataLoader,
         optimizer: torch.optim.Optimizer | None,
         split: Split,
+        stage: int,
     ):
         if self.model is None:
             raise ValueError("모델이 초기화되지 않았습니다.")
 
+        if stage not in (1, 2):
+            raise ValueError(f"stage must be 1 or 2, got: {stage}")
+
         is_train = split == Split.TRAIN
         self.model.train() if is_train else self.model.eval()
 
-        desc = self.get_desc(self.config.model.model.name, split)
+        desc = self.get_desc(f"{self.config.model.model.name}_stage{stage}", split)
 
         total_sum = 0.0
         ce_sum = 0.0
@@ -189,38 +312,35 @@ class ReGAEAdapter(BaseModelAdapter):
             x_missing, y, x_clean, _, _, _ = self._prepare_batch(batch)
 
             with torch.set_grad_enabled(is_train):
+                # 항상 missing/clean 둘 다 forward
                 out_missing = self.model(x_cont=x_missing, x_cat=None)
-                logits = out_missing["logits"]
                 z_missing = out_missing["embedding"]
                 recon_missing = out_missing.get("recon")
-
-                if logits is None:
-                    raise ValueError("d_out가 None인 모델입니다. logits가 None 입니다.")
 
                 out_clean = self.model(x_cont=x_clean, x_cat=None)
                 z_clean = out_clean["embedding"]
                 recon_clean = out_clean.get("recon")
 
-                loss_ce = F.cross_entropy(logits, y)
+                # 항상 InfoNCE / Recon 계산
                 loss_info = info_nce_loss(z_clean, z_missing, self.temperature)
-
-                if self.lambda_recon != 0.0:
-                    if recon_missing is None or recon_clean is None:
-                        raise ValueError(
-                            "recon이 None 입니다. (decoder/recon head가 없는 모델입니다.)"
-                        )
-                    loss_recon = 0.5 * (
-                        F.mse_loss(recon_missing, x_clean)
-                        + F.mse_loss(recon_clean, x_clean)
-                    )
-                else:
-                    loss_recon = torch.zeros((), device=x_missing.device)
-
-                loss_total = (
-                    self.lambda_class * loss_ce
-                    + self.lambda_view * loss_info
-                    + self.lambda_recon * loss_recon
+                loss_recon = 0.5 * (
+                    F.mse_loss(recon_missing, x_clean)
+                    + F.mse_loss(recon_clean, x_clean)
                 )
+
+                # stage2에서만 CE 추가
+                if stage == 2:
+                    logits = out_missing["logits"]
+                    loss_ce = F.cross_entropy(logits, y)
+                else:
+                    loss_ce = torch.zeros((), device=x_missing.device)
+
+                # total
+                loss_total = (
+                    self.lambda_view * loss_info + self.lambda_recon * loss_recon
+                )
+                if stage == 2:
+                    loss_total = loss_total + self.lambda_class * loss_ce
 
                 if is_train:
                     optimizer.zero_grad()
