@@ -73,9 +73,45 @@ def get_regae_stage_adapter():
     return ReGAEAdapter
 
 
+def get_regvae_adapter():
+    from src.models.ReGVAE_adapter import ReGVAEAdapter
+
+    return ReGVAEAdapter
+
+
+def get_naim_adapter():
+    from src.models.naim_adapter import NAIMAdapter
+
+    return NAIMAdapter
+
+
+def get_hybrid_xgvae_adapter():
+    from src.models.hybrid_xgvae_adapter import HybridXGVAEAdapter
+
+    return HybridXGVAEAdapter
+
+
+def get_hybrid_xgvae_ts_1_adapter():
+    from src.models.hybrid_xgvae_ts_1_adapter import HybridXGVAE_TS_1_Adapter
+
+    return HybridXGVAE_TS_1_Adapter
+
+
+def get_hybrid_xgvae_ts_2_adapter():
+    from src.models.hybrid_xgvae_ts_2_adapter import HybridXGVAE_TS_2_Adapter
+
+    return HybridXGVAE_TS_2_Adapter
+
+
 # def get_mdbe_1_adapter():
 #     from src.models.MDBE_1_adapter import MDBE_1_Adapter
 #     return MDBE_1_Adapter
+
+
+def get_regvae_xai_adapter():
+    from src.models.ReGVAE_xai_adapter import ReGVAEAdapterXAI
+
+    return ReGVAEAdapterXAI
 
 
 # ─────────────────────────────────────────────
@@ -94,12 +130,18 @@ MODEL_MAP = {
     ModelType.TABPFN: get_tabfpn_adapter(),
     ModelType.MLP: get_mlp_adapter(),
     ModelType.RESMLP: get_resmlp_adapter(),
+    ModelType.NAIM: get_naim_adapter(),
     # ReGAE
     ModelType.REGAE: get_regae_adapter(),
+    ModelType.REGVAE: get_regvae_adapter(),
     ModelType.REGAE_STAGE: get_regae_stage_adapter(),
     # # Custom MDBE 계열
     # ModelType.MDBE_1: get_mdbe_1_adapter(),
     # ModelType.MDBE_1_E2E: get_mdbe_1_e2e_adapter(),
+    ModelType.HYBRID_XGVAE: get_hybrid_xgvae_adapter(),
+    ModelType.HYBRID_XGVAE_TS_1: get_hybrid_xgvae_ts_1_adapter(),
+    ModelType.HYBRID_XGVAE_TS_2: get_hybrid_xgvae_ts_2_adapter(),
+    ModelType.REGVAE_XAI: get_regvae_xai_adapter(),
 }
 
 

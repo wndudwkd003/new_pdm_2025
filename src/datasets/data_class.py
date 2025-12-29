@@ -384,29 +384,6 @@ class Datasets(Dataset):
 
         return loader
 
-    # def get_loader_for_deep(self, shuffle: bool = True):
-    #     self.build_dl_view()
-
-    #     collator = DefaultMissingCollator(self)
-
-    #     y_base = self.imputed_dict["original"]["y"]  # (N_base,)
-    #     batch_sampler = BalancedClassBatchSampler(
-    #         labels=y_base,
-    #         batch_size=self.config.train.batch_size,  # 여기 batch_size는 'base' 기준
-    #         min_per_class=2,  # cls contrast가 있으면 2 이상 권장
-    #         classes_per_batch=None,  # 자동: batch_size//min_per_class
-    #         seed=self.config.train.seed if self.config.train.seed >= 0 else 42,
-    #         drop_last=True,
-    #     )
-
-    #     loader = DataLoader(
-    #         self,
-    #         batch_sampler=batch_sampler,  # 핵심
-    #         num_workers=self.config.data.num_workers,
-    #         collate_fn=collator,
-    #     )
-    #     return loader
-
     def build_dl_view(self):
         X_list: list[np.ndarray] = []
         y_list: list[np.ndarray] = []

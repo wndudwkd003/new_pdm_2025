@@ -23,10 +23,18 @@ class ModelType(Enum):
     DEEPTLF = "deeptlf"
     TABPFN = "tabpfn"
 
+    NAIM = "naim"
+
     #
     REGAE = "regae"
     REGAE_STAGE = "regae_stage"
+    REGVAE = "regvae"
 
+    HYBRID_XGVAE = "hybrid_xgvae"
+    HYBRID_XGVAE_TS_1 = "hybrid_xgvae_ts_1"
+    HYBRID_XGVAE_TS_2 = "hybrid_xgvae_ts_2"
+
+    REGVAE_XAI = "regvae_xai"
     #
     # (deprecated)
     MDBE_1 = "mdbe_1"

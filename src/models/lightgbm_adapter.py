@@ -42,6 +42,7 @@ class LightGBMAdapter(BaseModelAdapter):
         print(f"[LightGBMAdapter] device_type: {device_type}")
 
         model = LGBMClassifier(
+            n_estimators=self.config.train.tree_est,
             objective=self.config.model.lgbm_objective,
             num_class=num_class,
             random_state=self.config.train.seed,
@@ -83,8 +84,8 @@ class LightGBMAdapter(BaseModelAdapter):
         ]
 
         # 예측
-        y_tr_pred = model.predict(X_tr)   # (N,)
-        y_val_pred = model.predict(X_val) # (N,)
+        y_tr_pred = model.predict(X_tr)  # (N,)
+        y_val_pred = model.predict(X_val)  # (N,)
 
         train_metrics = compute_classification_metrics(y_tr, y_tr_pred)
         valid_metrics = compute_classification_metrics(y_val, y_val_pred)
@@ -108,7 +109,7 @@ class LightGBMAdapter(BaseModelAdapter):
         if self.model is None:
             raise ValueError("모델이 학습되거나 로드되지 않았습니다.")
 
-        y_pred = self.model.predict(X)   # (N,)
+        y_pred = self.model.predict(X)  # (N,)
         return y_pred
 
     def test(
@@ -119,8 +120,8 @@ class LightGBMAdapter(BaseModelAdapter):
             raise ValueError("모델이 학습되거나 로드되지 않았습니다.")
 
         # 전체 테스트 데이터 기준 성능
-        X_all, y_all = test_data.get_data_for_gbdt()   # (N, F), (N,)
-        y_pred_all = self.model.predict(X_all)         # (N,)
+        X_all, y_all = test_data.get_data_for_gbdt()  # (N, F), (N,)
+        y_pred_all = self.model.predict(X_all)  # (N,)
 
         metrics_overall = compute_classification_metrics(y_all, y_pred_all)
 

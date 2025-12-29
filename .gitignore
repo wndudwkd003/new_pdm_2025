@@ -1,6 +1,9 @@
 datasets/*/data/
 datasets/*/processed_data/
+datasets/*/backup/*
 outputs_seeds/
+datasets/*/backup/
+datasets/c-mapss/backup/processed_data_BACKUP/engine_knee_plots_multi_no_normal/
 outputs/
 outputs_auto_run/
 outputs_seeds_total/

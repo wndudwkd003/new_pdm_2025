@@ -20,6 +20,11 @@ class BaseModelAdapter(ABC):
         self.config = config
         self.model: torch.nn.Module | None = None
 
+        self.work_dir: Path | None = None
+
+    def set_work_dir(self, work_dir: Path) -> None:
+        self.work_dir = work_dir
+
     @abstractmethod
     def fit(
         self,

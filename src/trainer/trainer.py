@@ -75,6 +75,7 @@ class Trainer:
         if split == Split.TRAIN:
             # train 시 작업 디렉토리 생성
             self.work_dir = self.get_work_dir()
+            self.adapter.set_work_dir(self.work_dir)
 
             train_ds = Datasets(
                 self.config,
@@ -138,6 +139,7 @@ class Trainer:
         elif split == Split.TEST:
             # test 시 저장된 디렉토리 불러옴
             self.work_dir = Path(self.config.model.save_work_dir)
+            self.adapter.set_work_dir(self.work_dir)
             results_dir = self.get_next_result_dir("test")
 
             train_train_dir = self.work_dir / Split.TRAIN.value

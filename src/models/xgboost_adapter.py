@@ -37,7 +37,7 @@ class XGBoostAdapter(BaseModelAdapter):
         print(f"[XGBoostAdapter] num_class_from_y: {num_class_from_y}")
 
         model = XGBClassifier(
-            n_estimators=self.config.train.epochs,
+            n_estimators=self.config.train.tree_est,
             objective=self.config.model.objective,
             num_class=num_class,
             random_state=self.config.train.seed,
@@ -66,7 +66,7 @@ class XGBoostAdapter(BaseModelAdapter):
             }
         ]
 
-        y_tr_pred = model.predict(X_tr)    # (N,)
+        y_tr_pred = model.predict(X_tr)  # (N,)
         y_val_pred = model.predict(X_val)  # (N,)
 
         train_metrics = compute_classification_metrics(y_tr, y_tr_pred)
@@ -103,8 +103,8 @@ class XGBoostAdapter(BaseModelAdapter):
             raise ValueError("모델이 학습되거나 로드되지 않았습니다.")
 
         # 전체 테스트 데이터 기준 성능
-        X_all, y_all = test_data.get_data_for_gbdt()   # (N, F), (N,)
-        y_pred_all = self.predict(X_all)               # (N,)
+        X_all, y_all = test_data.get_data_for_gbdt()  # (N, F), (N,)
+        y_pred_all = self.predict(X_all)  # (N,)
 
         metrics_overall = compute_classification_metrics(y_all, y_pred_all)
 
@@ -136,10 +136,7 @@ class XGBoostAdapter(BaseModelAdapter):
 
         return results
 
-    def save(
-        self,
-        path: Path
-    ):
+    def save(self, path: Path):
         if self.model is None:
             raise ValueError("저장할 모델이 없습니다.")
 
@@ -155,10 +152,7 @@ class XGBoostAdapter(BaseModelAdapter):
 
         self.save_meta(save_dir, meta)
 
-    def load(
-        self,
-        path: Path
-    ):
+    def load(self, path: Path):
         save_dir = path / Split.TRAIN.value / "save"
         meta = self.load_meta(save_dir)
 

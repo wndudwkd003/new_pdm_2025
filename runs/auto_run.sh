@@ -3,7 +3,7 @@
 GPU="0 1 2"
 MODE="train"  # train or test
 
-JSON_PATH="outputs_auto_run/2025-12-20_15-43-04_regae_seed42_0.0_to_0.5_0.1_step_multi_mcar_zero_auto.json"
+JSON_PATH="outputs_auto_run/2025-12-28_15-27-52_regvae_0.0_to_0.5_0.1_step_multi_mcar_zero_auto.json"
 
 # test 모드일 때 JSON path 세 번째 인자로 넘김
 if [ "$MODE" = "test" ]; then
@@ -14,8 +14,8 @@ if [ "$MODE" = "test" ]; then
     exit 0
 fi
 
-# train 모드일 때 seeds 정의
-SEEDS=(42 567 2025 6652 75342)
+# train 모드일 때 seeds 정의 75342
+SEEDS=(42 567 2025 6652 87654)
 
 python -m scripts.auto_run \
     --mode train \
