@@ -227,7 +227,6 @@ class Trainer:
             # }
             overall = results["metrics_overall"]
             by_ratio = results["metrics_by_ratio"]
-            task = results["task"] if "task" in results else "classification"
 
             overall_dir = path / "overall"
             overall_dir.mkdir(parents=True, exist_ok=True)
@@ -236,47 +235,35 @@ class Trainer:
             ratio_base_dir = path / "by_ratio"
             ratio_base_dir.mkdir(parents=True, exist_ok=True)
 
+            # 패턴별 / ratio별 지표 + ratio 곡선
             for pattern, ratio_dict in by_ratio.items():
                 pattern_dir = ratio_base_dir / f"pattern_{pattern}"
                 pattern_dir.mkdir(parents=True, exist_ok=True)
 
+                # 각 ratio별 metrics 저장
                 for ratio_value, m in ratio_dict.items():
                     r_dir = pattern_dir / f"ratio_{ratio_value}"
                     r_dir.mkdir(parents=True, exist_ok=True)
                     save_metrics_artifacts(m, r_dir)
 
-                # ---- 여기부터 task 기반 플롯 분기 ----
+                # ratio에 따른 꺾은선 (accuracy, f1_macro)
+                plot_metric_over_ratio(
+                    metrics_by_ratio=ratio_dict,
+                    metric_key="accuracy",
+                    save_dir=pattern_dir,
+                    prefix=f"{pattern}",
+                )
+                # f1_macro가 있는 경우에만
                 sample_metrics = next(iter(ratio_dict.values()))
-
-                if task == "classification":
-                    # accuracy는 분류에서만 강제
-                    if "accuracy" in sample_metrics:
-                        plot_metric_over_ratio(
-                            metrics_by_ratio=ratio_dict,
-                            metric_key="accuracy",
-                            save_dir=pattern_dir,
-                            prefix=f"{pattern}",
-                        )
-                    if "f1_macro" in sample_metrics:
-                        plot_metric_over_ratio(
-                            metrics_by_ratio=ratio_dict,
-                            metric_key="f1_macro",
-                            save_dir=pattern_dir,
-                            prefix=f"{pattern}",
-                        )
-
-                elif task == "regression":
-                    # 회귀는 rmse/mae/r2 중 존재하는 것만 그림
-                    for k in ["rmse", "mae", "r2"]:
-                        if k in sample_metrics:
-                            plot_metric_over_ratio(
-                                metrics_by_ratio=ratio_dict,
-                                metric_key=k,
-                                save_dir=pattern_dir,
-                                prefix=f"{pattern}",
-                            )
-                else:
-                    raise ValueError(f"Unknown task in results: {task}")
+                if "f1_macro" in sample_metrics:
+                    plot_metric_over_ratio(
+                        metrics_by_ratio=ratio_dict,
+                        metric_key="f1_macro",
+                        save_dir=pattern_dir,
+                        prefix=f"{pattern}",
+                    )
+        else:
+            raise ValueError(f"알 수 없는 split: {split}")
 
         return path
 

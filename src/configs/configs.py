@@ -28,7 +28,7 @@ from src.params.scenario import (
 
 @dataclass
 class Data:
-    datasets: DatasetType = DatasetType.CMAPSS
+    datasets: DatasetType = DatasetType.MPTMS
     skip_header: bool = True
     data_load_workers: int = 10
     num_workers: int = 5
@@ -40,8 +40,8 @@ class Data:
     start_missing_ratio: float = 0.0
     step_missing_ratio: float = 0.1  # 0.1
     impute_method: ImputeMethod = ImputeMethod.ZERO
-    use_on_batch: bool = False
-    different_mode: bool = True
+    use_on_batch: bool = True
+    different_mode: bool = False
     # stack_mode: StackMode
 
 
@@ -65,7 +65,7 @@ class Train:
 
 @dataclass
 class Model:
-    model: ModelType = ModelType.AGATa
+    model: ModelType = ModelType.REGVAE_XAI
     stage: StageType = StageType.NONE
     other_prefix: str = ""
     save_work_dir: str = ""
@@ -76,8 +76,8 @@ class Model:
     use_stage_1_ce: bool = True
 
     # xgboost
-    eval_metric: str = "mlogloss"
-    objective: str = "multi:softprob"
+    eval_metric: str = "auto"
+    objective: str = "auto"
 
     # light gbm
     lgbm_objective: str = "multiclass"

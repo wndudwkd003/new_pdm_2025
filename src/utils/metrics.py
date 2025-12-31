@@ -6,8 +6,8 @@ from sklearn.metrics import precision_recall_fscore_support
 
 
 def compute_classification_metrics(
-    y_true: np.ndarray,   # (N,)
-    y_pred: np.ndarray,   # (N,) 또는 (N, C)
+    y_true: np.ndarray,  # (N,)
+    y_pred: np.ndarray,  # (N,) 또는 (N, C)
     labels: list[int] | None = None,
 ) -> dict[str, Any]:
     """
@@ -35,7 +35,9 @@ def compute_classification_metrics(
 
     # y_true: (N,) 강제
     if y_true.ndim != 1:
-        raise ValueError(f"[metrics] y_true는 1차원이어야 합니다. 현재 shape: {y_true.shape}")
+        raise ValueError(
+            f"[metrics] y_true는 1차원이어야 합니다. 현재 shape: {y_true.shape}"
+        )
 
     N = y_true.shape[0]
 
@@ -56,7 +58,9 @@ def compute_classification_metrics(
                 f"y_true {y_true.shape}, y_pred {y_pred.shape}"
             )
     else:
-        raise ValueError(f"[metrics] y_pred는 1차원 또는 2차원이어야 합니다. 현재 shape: {y_pred.shape}")
+        raise ValueError(
+            f"[metrics] y_pred는 1차원 또는 2차원이어야 합니다. 현재 shape: {y_pred.shape}"
+        )
 
     # 클래스 레이블 자동 추론
     if labels is None:
@@ -98,4 +102,29 @@ def compute_classification_metrics(
         "f1_macro": float(f_macro),
         "per_class": per_class,
         "num_samples": int(N),
+    }
+
+
+def compute_regression_metrics(y_true: np.ndarray, y_pred: np.ndarray) -> dict:
+    y_true = np.asarray(y_true).reshape(-1)
+    y_pred = np.asarray(y_pred).reshape(-1)
+
+    err = y_pred - y_true
+    mae = float(np.mean(np.abs(err)))
+    mse = float(np.mean(err * err))
+    rmse = float(np.sqrt(mse))
+
+    y_mean = float(np.mean(y_true))
+    ss_tot = float(np.sum((y_true - y_mean) ** 2))
+    ss_res = float(np.sum((y_true - y_pred) ** 2))
+
+    r2 = 0.0
+    if ss_tot != 0.0:
+        r2 = 1.0 - (ss_res / ss_tot)
+
+    return {
+        "mae": mae,
+        "mse": mse,
+        "rmse": rmse,
+        "r2": float(r2),
     }
