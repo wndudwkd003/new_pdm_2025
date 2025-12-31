@@ -114,6 +114,18 @@ def get_regvae_xai_adapter():
     return ReGVAEAdapterXAI
 
 
+def get_saint_adapter():
+    from src.models.saint_adapter import SAINTAdapter
+
+    return SAINTAdapter
+
+
+def get_agata_adapter():
+    from src.models.agata_adapter import AGATaAdapter
+
+    return AGATaAdapter
+
+
 # ─────────────────────────────────────────────
 # MODEL_MAP 정의
 # ─────────────────────────────────────────────
@@ -142,6 +154,8 @@ MODEL_MAP = {
     ModelType.HYBRID_XGVAE_TS_1: get_hybrid_xgvae_ts_1_adapter(),
     ModelType.HYBRID_XGVAE_TS_2: get_hybrid_xgvae_ts_2_adapter(),
     ModelType.REGVAE_XAI: get_regvae_xai_adapter(),
+    ModelType.SAINT: get_saint_adapter(),
+    ModelType.AGATa: get_agata_adapter(),
 }
 
 

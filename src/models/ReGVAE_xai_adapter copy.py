@@ -10,12 +10,14 @@ from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 
 from src.core.models.ReGVAE_xai import ReGVAE
-from src.core.utils.losses import ReGVAEFinalStage1Loss, info_nce_loss
+from src.core.utils.losses import ReGVAEFinalStage1Loss
+
 from src.configs.configs import Config
 from src.models.base_model_adapter import BaseModelAdapter
 from src.datasets.data_class import Datasets
 from src.utils.metrics import compute_classification_metrics
 from src.params.data_model import Split
+
 from src.utils.embedding_vis import visualize_missing_mu_tsne
 from src.utils.xai_save import save_xai_artifacts
 
@@ -31,44 +33,35 @@ class ReGVAEAdapterXAI(BaseModelAdapter):
         self.num_class: int | None = None
 
         m = self.config.model
-        self.use_my_loss = bool(m.use_my_loss)
 
-        self.use_stage_1_ce = bool(m.use_stage_1_ce)
-        self.lambda_stage1_ce = float(m.lambda_stage1_ce)
+        self.lambda_contrast = m.lambda_contrast
+        self.lambda_mu = m.lambda_mu
+        self.lambda_prior = m.lambda_prior
+        self.lambda_recon = m.lambda_recon
 
-        self.tau = float(m.tau)
+        self.stage1_loss = ReGVAEFinalStage1Loss(
+            tau=m.tau,
+            lambda_cls=m.lambda_cls,
+            w_contrast=self.lambda_contrast,
+            w_mu=self.lambda_mu,
+            w_prior=self.lambda_prior,
+            w_recon=self.lambda_recon,
+            mu_align=m.mu_align,
+        )
 
-        self.lambda_contrast = float(m.lambda_contrast)
-        self.lambda_mu = float(m.lambda_mu)
-        self.lambda_prior = float(m.lambda_prior)
-        self.lambda_recon = float(m.lambda_recon)
-
-        if self.use_my_loss:
-            self.stage1_loss = ReGVAEFinalStage1Loss(
-                tau=float(m.tau),
-                lambda_cls=float(m.lambda_cls),
-                w_contrast=self.lambda_contrast,
-                w_mu=self.lambda_mu,
-                w_prior=self.lambda_prior,
-                w_recon=self.lambda_recon,
-                mu_align=m.mu_align,
-            )
-        else:
-            self.stage1_loss = None
-
-        self.retrieval_k = int(m.retrieval_k)
-        self.retrieval_tau = float(m.retrieval_tau)
-        self.retrieval_chunk = int(m.retrieval_chunk)
+        self.retrieval_k = m.retrieval_k
+        self.retrieval_tau = m.retrieval_tau
+        self.retrieval_chunk = m.retrieval_chunk
 
         self._bank_mu: torch.Tensor | None = None
         self._bank_mu_norm: torch.Tensor | None = None
         self._bank_y: torch.Tensor | None = None
         self._bank_idx: torch.Tensor | None = None
 
-        self.vis_max_points = int(m.vis_max_points)
-        self.vis_pca_dim = int(m.vis_pca_dim)
-        self.vis_perplexity = float(m.vis_perplexity)
-        self.vis_seed = int(m.vis_seed)
+        self.vis_max_points = m.vis_max_points
+        self.vis_pca_dim = m.vis_pca_dim
+        self.vis_perplexity = m.vis_perplexity
+        self.vis_seed = m.vis_seed
 
     def fit(self, train_data: Datasets, valid_data: Datasets):
         tr_loader = train_data.get_loader_for_deep(shuffle=True)
@@ -78,8 +71,6 @@ class ReGVAEAdapterXAI(BaseModelAdapter):
         self.num_class = train_data.meta.num_class
 
         self.model = self._get_model(self.input_dim, self.num_class)
-
-        name = self.config.model.model.name
 
         stage1_epochs = self.config.train.epochs
         opt1, sch1 = self._make_optimizer_scheduler(stage=1, num_epochs=stage1_epochs)
@@ -91,10 +82,8 @@ class ReGVAEAdapterXAI(BaseModelAdapter):
 
         train_total_1: list[float] = []
         valid_total_1: list[float] = []
-        train_contrast_1: list[float] = []
-        valid_contrast_1: list[float] = []
-        train_cls_ce_1: list[float] = []
-        valid_cls_ce_1: list[float] = []
+        train_ce_1: list[float] = []
+        valid_ce_1: list[float] = []
         train_view_1: list[float] = []
         valid_view_1: list[float] = []
         train_kl_1: list[float] = []
@@ -108,20 +97,16 @@ class ReGVAEAdapterXAI(BaseModelAdapter):
 
             lr = opt1.param_groups[0]["lr"]
             print(
-                f"[{name} Stage1 Epoch {epoch + 1}] "
-                f"Train: total={tr['total']:.4f}, contrast={tr['contrast']:.4f}, cls_ce={tr['cls_ce']:.4f}, "
-                f"view={tr['view']:.4f}, kl={tr['kl']:.4f}, recon={tr['recon']:.4f} | "
-                f"Valid: total={vl['total']:.4f}, contrast={vl['contrast']:.4f}, cls_ce={vl['cls_ce']:.4f}, "
-                f"view={vl['view']:.4f}, kl={vl['kl']:.4f}, recon={vl['recon']:.4f} | "
+                f"[{self.config.model.model.name} Stage1 Epoch {epoch + 1}] "
+                f"Train: total={tr['total']:.4f}, ce={tr['ce']:.4f}, view={tr['view']:.4f}, kl={tr['kl']:.4f}, recon={tr['recon']:.4f} | "
+                f"Valid: total={vl['total']:.4f}, ce={vl['ce']:.4f}, view={vl['view']:.4f}, kl={vl['kl']:.4f}, recon={vl['recon']:.4f} | "
                 f"LR: {lr:.6f}"
             )
 
             train_total_1.append(tr["total"])
             valid_total_1.append(vl["total"])
-            train_contrast_1.append(tr["contrast"])
-            valid_contrast_1.append(vl["contrast"])
-            train_cls_ce_1.append(tr["cls_ce"])
-            valid_cls_ce_1.append(vl["cls_ce"])
+            train_ce_1.append(tr["ce"])
+            valid_ce_1.append(vl["ce"])
             train_view_1.append(tr["view"])
             valid_view_1.append(vl["view"])
             train_kl_1.append(tr["kl"])
@@ -140,7 +125,9 @@ class ReGVAEAdapterXAI(BaseModelAdapter):
             else:
                 patience += 1
                 if patience >= max_patience:
-                    print(f"[{name}] Stage1 Early stopping at epoch {epoch + 1}")
+                    print(
+                        f"[{self.config.model.model.name}] Stage1 Early stopping at epoch {epoch + 1}"
+                    )
                     break
 
         if best_state is not None:
@@ -186,6 +173,12 @@ class ReGVAEAdapterXAI(BaseModelAdapter):
         valid_total_2: list[float] = []
         train_ce_2: list[float] = []
         valid_ce_2: list[float] = []
+        train_view_2: list[float] = []
+        valid_view_2: list[float] = []
+        train_kl_2: list[float] = []
+        valid_kl_2: list[float] = []
+        train_recon_2: list[float] = []
+        valid_recon_2: list[float] = []
 
         for epoch in range(stage2_epochs):
             tr2 = self.run_epoch(
@@ -197,7 +190,7 @@ class ReGVAEAdapterXAI(BaseModelAdapter):
 
             lr2 = opt2.param_groups[0]["lr"]
             print(
-                f"[{name} Stage2 Epoch {epoch + 1}] "
+                f"[{self.config.model.model.name} Stage2 Epoch {epoch + 1}] "
                 f"Train: total={tr2['total']:.4f}, ce={tr2['ce']:.4f} | "
                 f"Valid: total={vl2['total']:.4f}, ce={vl2['ce']:.4f} | "
                 f"LR: {lr2:.6f}"
@@ -207,6 +200,13 @@ class ReGVAEAdapterXAI(BaseModelAdapter):
             valid_total_2.append(vl2["total"])
             train_ce_2.append(tr2["ce"])
             valid_ce_2.append(vl2["ce"])
+
+            train_view_2.append(tr2["view"])
+            valid_view_2.append(vl2["view"])
+            train_kl_2.append(tr2["kl"])
+            valid_kl_2.append(vl2["kl"])
+            train_recon_2.append(tr2["recon"])
+            valid_recon_2.append(vl2["recon"])
 
             sch2.step()
 
@@ -219,7 +219,9 @@ class ReGVAEAdapterXAI(BaseModelAdapter):
             else:
                 patience2 += 1
                 if patience2 >= self.config.train.early_stopping_rounds:
-                    print(f"[{name}] Stage2 Early stopping at epoch {epoch + 1}")
+                    print(
+                        f"[{self.config.model.model.name}] Stage2 Early stopping at epoch {epoch + 1}"
+                    )
                     break
 
         if best_state2 is not None:
@@ -269,15 +271,13 @@ class ReGVAEAdapterXAI(BaseModelAdapter):
         components = {
             "stage1": {
                 "train": {
-                    "contrast": train_contrast_1,
-                    "cls_ce": train_cls_ce_1,
+                    "ce": train_ce_1,
                     "view": train_view_1,
                     "kl": train_kl_1,
                     "recon": train_recon_1,
                 },
                 "valid": {
-                    "contrast": valid_contrast_1,
-                    "cls_ce": valid_cls_ce_1,
+                    "ce": valid_ce_1,
                     "view": valid_view_1,
                     "kl": valid_kl_1,
                     "recon": valid_recon_1,
@@ -286,9 +286,15 @@ class ReGVAEAdapterXAI(BaseModelAdapter):
             "stage2": {
                 "train": {
                     "ce": train_ce_2,
+                    "view": train_view_2,
+                    "kl": train_kl_2,
+                    "recon": train_recon_2,
                 },
                 "valid": {
                     "ce": valid_ce_2,
+                    "view": valid_view_2,
+                    "kl": valid_kl_2,
+                    "recon": valid_recon_2,
                 },
             },
         }
@@ -301,9 +307,6 @@ class ReGVAEAdapterXAI(BaseModelAdapter):
                 "metric_name": metric_name,
                 "tasks": tasks,
                 "components": components,
-                "stage1_rep_loss": "contrast" if self.use_my_loss else "info_nce",
-                "stage1_use_cls_ce": bool(self.use_stage_1_ce),
-                "stage1_cls_ce_weight": float(self.lambda_stage1_ce),
             },
             "artifacts": {
                 "memory_bank": str(mem_path),
@@ -420,8 +423,6 @@ class ReGVAEAdapterXAI(BaseModelAdapter):
         desc = self.get_desc(f"{self.config.model.model.name}_stage{stage}", split)
 
         total_sum = 0.0
-        contrast_sum = 0.0
-        cls_ce_sum = 0.0
         ce_sum = 0.0
         view_sum = 0.0
         kl_sum = 0.0
@@ -429,14 +430,6 @@ class ReGVAEAdapterXAI(BaseModelAdapter):
         num_batches = 0
 
         for batch in tqdm(loader, desc=desc):
-            loss_total = torch.zeros((), device=self.device)
-            loss_contrast = torch.zeros((), device=self.device)
-            loss_cls_ce = torch.zeros((), device=self.device)
-            loss_ce = torch.zeros((), device=self.device)
-            loss_view = torch.zeros((), device=self.device)
-            loss_kl = torch.zeros((), device=self.device)
-            loss_recon = torch.zeros((), device=self.device)
-
             x, y, x_ori, _, _, _, base_idx, _, V = self._prepare_batch(batch)
 
             if stage == 1:
@@ -449,50 +442,28 @@ class ReGVAEAdapterXAI(BaseModelAdapter):
                     )
                     out_missing = self.model(x_cont=x, x_cat=None, return_attn=False)
 
-                    if self.use_my_loss:
-                        if self.stage1_loss is None:
-                            raise ValueError("stage1_loss is None")
-                        loss_dict = self.stage1_loss(
-                            mu_clean=out_clean["z_mu"],
-                            logvar_clean=out_clean["z_logvar"],
-                            mu_missing=out_missing["z_mu"],
-                            logvar_missing=out_missing["z_logvar"],
-                            x_clean=x_clean,
-                            recon_clean=out_clean["recon"],
-                            recon_missing=out_missing["recon"],
-                            y_base=y_base,
-                            views_per_base=V,
-                        )
-                        loss_total = loss_dict["total"]
-                        loss_contrast = loss_dict["contrast"]
-                        loss_view = loss_dict["mu_align"]
-                        loss_kl = loss_dict["prior"]
-                        loss_recon = loss_dict["recon"]
-                    else:
-                        mu_clean = out_clean["z_mu"]
-                        mu_missing = out_missing["z_mu"]
-                        mu_clean_rep = (
-                            mu_clean.repeat_interleave(V, dim=0) if V > 1 else mu_clean
-                        )
-                        loss_contrast = info_nce_loss(
-                            mu_clean_rep, mu_missing, temperature=self.tau
-                        )
-                        loss_total = loss_contrast
+                    loss_dict = self.stage1_loss(
+                        mu_clean=out_clean["z_mu"],
+                        logvar_clean=out_clean["z_logvar"],
+                        mu_missing=out_missing["z_mu"],
+                        logvar_missing=out_missing["z_logvar"],
+                        x_clean=x_clean,
+                        recon_clean=out_clean["recon"],
+                        recon_missing=out_missing["recon"],
+                        y_base=y_base,
+                        views_per_base=V,
+                    )
 
-                    if self.use_stage_1_ce:
-                        logits_clean = out_clean["logits"]
-                        logits_missing = out_missing["logits"]
-                        if logits_clean is None or logits_missing is None:
-                            raise ValueError("use_stage_1_ce=True requires logits.")
-                        ce_clean = F.cross_entropy(logits_clean, y_base)
-                        ce_missing = F.cross_entropy(logits_missing, y)
-                        loss_cls_ce = 0.5 * (ce_clean + ce_missing)
-                        loss_total = loss_total + self.lambda_stage1_ce * loss_cls_ce
-
+                    loss_total = loss_dict["total"]
                     if is_train:
                         optimizer.zero_grad()
                         loss_total.backward()
                         optimizer.step()
+
+                loss_ce = loss_dict["contrast"]
+                loss_view = loss_dict["mu_align"]
+                loss_kl = loss_dict["prior"]
+                loss_recon = loss_dict["recon"]
 
             else:
                 with torch.set_grad_enabled(is_train):
@@ -507,6 +478,9 @@ class ReGVAEAdapterXAI(BaseModelAdapter):
                     logits = self.model.cls_head(fused)
 
                     loss_ce = F.cross_entropy(logits, y)
+                    loss_view = torch.zeros((), device=self.device)
+                    loss_kl = torch.zeros((), device=self.device)
+                    loss_recon = torch.zeros((), device=self.device)
                     loss_total = loss_ce
 
                     if is_train:
@@ -515,19 +489,15 @@ class ReGVAEAdapterXAI(BaseModelAdapter):
                         optimizer.step()
 
             num_batches += 1
-            total_sum += float(loss_total.item())
-            contrast_sum += float(loss_contrast.item())
-            cls_ce_sum += float(loss_cls_ce.item())
-            ce_sum += float(loss_ce.item())
-            view_sum += float(loss_view.item())
-            kl_sum += float(loss_kl.item())
-            recon_sum += float(loss_recon.item())
+            total_sum += loss_total.item()
+            ce_sum += loss_ce.item()
+            view_sum += loss_view.item()
+            kl_sum += loss_kl.item()
+            recon_sum += loss_recon.item()
 
         denom = max(1, num_batches)
         return {
             "total": total_sum / denom,
-            "contrast": contrast_sum / denom,
-            "cls_ce": cls_ce_sum / denom,
             "ce": ce_sum / denom,
             "view": view_sum / denom,
             "kl": kl_sum / denom,
@@ -574,8 +544,9 @@ class ReGVAEAdapterXAI(BaseModelAdapter):
         desc = self.get_desc(self.config.model.model.name, split)
 
         for batch_i, batch in enumerate(tqdm(loader, desc=desc)):
-            if max_batches is not None and batch_i >= max_batches:
-                break
+            if max_batches is not None:
+                if batch_i >= max_batches:
+                    break
 
             x, y, _, _, pattern_idx, ratio_idx, base_idx, _, _ = self._prepare_batch(
                 batch
@@ -586,9 +557,11 @@ class ReGVAEAdapterXAI(BaseModelAdapter):
                 logits = out["logits"]
                 if logits is None:
                     raise ValueError("stage1 logits is None")
+
                 if return_xai:
                     attn_cls_feat = self._extract_cls_to_feature_attention(out)
                     xai_pack["attn_cls_feat"].append(attn_cls_feat.detach().cpu())
+
             else:
                 out = self.model(x_cont=x, x_cat=None, return_attn=return_xai)
                 mu_q = out["z_mu"]
@@ -612,7 +585,7 @@ class ReGVAEAdapterXAI(BaseModelAdapter):
             loss = F.cross_entropy(logits, y)
             preds = logits.argmax(dim=1)
 
-            total_loss += float(loss.item())
+            total_loss += loss.item()
             num_batches += 1
 
             all_preds.append(preds.detach().cpu())
@@ -650,7 +623,7 @@ class ReGVAEAdapterXAI(BaseModelAdapter):
 
         X_clean = dataset.imputed_dict["original"]["X"]
         y_clean = dataset.imputed_dict["original"]["y"]
-        N = int(X_clean.shape[0])
+        N = X_clean.shape[0]
 
         mu_list = []
         bs = 4096
@@ -786,7 +759,9 @@ class ReGVAEAdapterXAI(BaseModelAdapter):
         self, out: Dict[str, torch.Tensor | None]
     ) -> torch.Tensor:
         if "attn_enc" not in out:
-            raise ValueError("out has no attn_enc")
+            raise ValueError(
+                "out has no attn_enc (model must return it when return_attn=True)"
+            )
 
         attn_list = out["attn_enc"]
         if attn_list is None:

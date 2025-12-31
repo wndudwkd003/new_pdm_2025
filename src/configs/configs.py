@@ -10,6 +10,7 @@
 from dataclasses import dataclass, field
 
 from lark import Tree
+from regex import F
 
 from src.params.data_model import (
     DatasetType,
@@ -27,7 +28,7 @@ from src.params.scenario import (
 
 @dataclass
 class Data:
-    datasets: DatasetType = DatasetType.MPTMS
+    datasets: DatasetType = DatasetType.CMAPSS
     skip_header: bool = True
     data_load_workers: int = 10
     num_workers: int = 5
@@ -39,8 +40,8 @@ class Data:
     start_missing_ratio: float = 0.0
     step_missing_ratio: float = 0.1  # 0.1
     impute_method: ImputeMethod = ImputeMethod.ZERO
-    use_on_batch: bool = True
-    different_mode: bool = False
+    use_on_batch: bool = False
+    different_mode: bool = True
     # stack_mode: StackMode
 
 
@@ -64,12 +65,15 @@ class Train:
 
 @dataclass
 class Model:
-    model: ModelType = ModelType.REGVAE_XAI
+    model: ModelType = ModelType.AGATa
     stage: StageType = StageType.NONE
     other_prefix: str = ""
     save_work_dir: str = ""
     model_size: ModelSize = ModelSize.NONE
     cross_ent_metric: str = "cross_entropy"
+
+    use_my_loss: bool = True
+    use_stage_1_ce: bool = True
 
     # xgboost
     eval_metric: str = "mlogloss"
@@ -80,6 +84,8 @@ class Model:
     lgbm_metric: str = "multi_logloss"
     lgbm_class_weight: str = "balanced"
     lambda_kd: float = 1.0
+
+    lambda_stage1_ce: float = 1.0
 
     # -------------------------
     # unified deep-model weights

@@ -16,7 +16,7 @@ from src.configs.configs import Config
 from src.models.base_model_adapter import BaseModelAdapter
 from src.datasets.data_class import Datasets
 from src.utils.metrics import compute_classification_metrics
-from src.params.data_model import Split, StageType
+from src.params.data_model import Split
 
 
 # -----------------------------
@@ -26,7 +26,7 @@ from src.params.data_model import Split, StageType
 
 class _ContinuousFeatureEmbedder(nn.Module):
     """
-    SAINT 논문: 연속형 feature마다 (1 -> d_token) FC + ReLU 를 독립적으로 적용.
+    SAINT: 연속형 feature마다 (1 -> d_token) FC + ReLU를 독립적으로 적용.
     여기서는 per-feature affine로 동일 효과를 구현:
       e_{i,j} = ReLU(x_{i,j} * W_j + b_j),  W_j,b_j in R^{d_token}
     """
@@ -57,7 +57,7 @@ class _ContinuousFeatureEmbedder(nn.Module):
 
 class _ProjectionHead(nn.Module):
     """
-    SAINT 논문: projection head는 hidden 1-layer MLP + ReLU
+    SAINT: projection head = hidden 1-layer MLP + ReLU (여기서는 2층으로 구현)
     """
 
     def __init__(self, d_in: int, d_hidden: int):
@@ -74,8 +74,7 @@ class _ProjectionHead(nn.Module):
 
 class _FeatureReconMLP(nn.Module):
     """
-    SAINT 논문: feature별로 MLP_j (hidden 1-layer + ReLU) 로 원 feature를 복원.
-    (연속형이므로 scalar 출력)
+    SAINT: feature별로 MLP_j (hidden 1-layer + ReLU)로 원 feature 복원 (연속형 scalar 출력)
     """
 
     def __init__(self, d_token: int):
@@ -132,10 +131,10 @@ class _SelfAttentionBlock(nn.Module):
 
 class _IntersampleAttentionBlock(nn.Module):
     """
-    SAINT 논문 Algorithm 1 구현:
+    SAINT Algorithm 1:
       x: (B, N, D)
-      reshape to (1, B, N*D), self-attention across "samples"(sequence length=B)
-      reshape back to (B, N, D)
+      reshape -> (1, B, N*D) 로 만든 뒤 "sample 축(B)"에 self-attn 수행
+      reshape back -> (B, N, D)
     """
 
     def __init__(
@@ -195,7 +194,6 @@ class _IntersampleAttentionBlock(nn.Module):
 
         h2 = self.ln_tok(x)
         x = x + self.ff(h2)
-
         return x
 
 
@@ -341,7 +339,7 @@ class SAINT(nn.Module):
 
 
 # -----------------------------
-# SAINT Adapter
+# SAINT Adapter (Stage1 -> Stage2 고정)
 # -----------------------------
 
 
@@ -379,7 +377,7 @@ class SAINTAdapter(BaseModelAdapter):
             self.mixup_alpha = 0.2
 
     # -------------------------
-    # Fit (Stage1 + Stage2)
+    # Fit (Stage1 -> Stage2)
     # -------------------------
     def fit(self, train_data: Datasets, valid_data: Datasets):
         tr_loader = train_data.get_loader_for_deep(shuffle=True)
@@ -388,203 +386,178 @@ class SAINTAdapter(BaseModelAdapter):
         self.input_dim = int(train_data.meta.input_dim)
         self.num_class = int(train_data.meta.num_class)
 
-        if self.model is None:
-            self.model = self._get_model(self.input_dim, self.num_class)
+        self.model = self._get_model(self.input_dim, self.num_class)
 
-        stage = self.config.model.stage
-
-        do_stage1 = (stage == StageType.STAGE1) or (stage == StageType.NONE)
-        do_stage2 = (stage == StageType.STAGE2) or (stage == StageType.NONE)
-
-        num_epochs = int(self.config.train.epochs)
+        stage1_epochs = int(self.config.train.epochs)
+        stage2_epochs = int(self.config.train.epochs)
         max_patience = int(self.config.train.early_stopping_rounds)
 
-        # 전체(연속 plot용)
-        train_total_all: list[float] = []
-        valid_total_all: list[float] = []
-
-        # stage1 logs
-        train_s1_total: list[float] = []
-        valid_s1_total: list[float] = []
-        train_s1_ce: list[float] = []
-        valid_s1_ce: list[float] = []
-        train_s1_info: list[float] = []
-        valid_s1_info: list[float] = []
-        train_s1_recon: list[float] = []
-        valid_s1_recon: list[float] = []
-
-        # stage2 logs
-        train_s2_total: list[float] = []
-        valid_s2_total: list[float] = []
-        train_s2_ce: list[float] = []
-        valid_s2_ce: list[float] = []
-        train_s2_info: list[float] = []
-        valid_s2_info: list[float] = []
-        train_s2_recon: list[float] = []
-        valid_s2_recon: list[float] = []
+        # -------------------------
+        # Stage1 logs
+        # -------------------------
+        train_total_1: list[float] = []
+        valid_total_1: list[float] = []
+        train_ce_1: list[float] = []
+        valid_ce_1: list[float] = []
+        train_info_1: list[float] = []
+        valid_info_1: list[float] = []
+        train_recon_1: list[float] = []
+        valid_recon_1: list[float] = []
 
         # -------------------------
-        # Stage 1: contrastive + denoising
+        # Stage2 logs
         # -------------------------
-        if do_stage1:
-            optimizer1, scheduler1 = self._build_optimizer_scheduler(
-                stage_name="stage1"
+        train_total_2: list[float] = []
+        valid_total_2: list[float] = []
+        train_ce_2: list[float] = []
+        valid_ce_2: list[float] = []
+        train_info_2: list[float] = []
+        valid_info_2: list[float] = []
+        train_recon_2: list[float] = []
+        valid_recon_2: list[float] = []
+
+        # -------------------------
+        # Stage 1: contrastive + denoising (clean x_originals 기반)
+        # -------------------------
+        opt1, sch1 = self._make_optimizer_scheduler(stage=1, num_epochs=stage1_epochs)
+
+        best_valid_1 = None
+        best_state_1 = None
+        patience_1 = 0
+
+        for epoch in range(stage1_epochs):
+            tr = self.run_epoch(tr_loader, opt1, Split.TRAIN, stage=1)
+            vl = self.run_epoch(vl_loader, None, Split.VALID, stage=1)
+
+            lr = float(opt1.param_groups[0]["lr"])
+            print(
+                f"[SAINT Stage1 Epoch {epoch + 1}] "
+                f"Train: total={tr['total']:.4f}, info={tr['info']:.4f}, recon={tr['recon']:.4f} | "
+                f"Valid: total={vl['total']:.4f}, info={vl['info']:.4f}, recon={vl['recon']:.4f} | "
+                f"LR: {lr:.6f}"
             )
 
-            best_valid_loss = None
-            best_state = None
-            patience = 0
+            train_total_1.append(tr["total"])
+            valid_total_1.append(vl["total"])
+            train_ce_1.append(tr["ce"])
+            valid_ce_1.append(vl["ce"])
+            train_info_1.append(tr["info"])
+            valid_info_1.append(vl["info"])
+            train_recon_1.append(tr["recon"])
+            valid_recon_1.append(vl["recon"])
 
-            for epoch in range(num_epochs):
-                tr = self.run_epoch_stage1(tr_loader, optimizer1, Split.TRAIN)
-                vl = self.run_epoch_stage1(vl_loader, None, Split.VALID)
+            sch1.step()
 
-                lr = float(optimizer1.param_groups[0]["lr"])
-
-                print(
-                    f"[SAINT Stage1 Epoch {epoch + 1}] "
-                    f"Train: total={tr['total']:.4f}, info={tr['info']:.4f}, recon={tr['recon']:.4f} | "
-                    f"Valid: total={vl['total']:.4f}, info={vl['info']:.4f}, recon={vl['recon']:.4f} | "
-                    f"LR: {lr:.6f}"
-                )
-
-                train_total_all.append(tr["total"])
-                valid_total_all.append(vl["total"])
-
-                train_s1_total.append(tr["total"])
-                valid_s1_total.append(vl["total"])
-
-                train_s1_ce.append(0.0)
-                valid_s1_ce.append(0.0)
-
-                train_s1_info.append(tr["info"])
-                valid_s1_info.append(vl["info"])
-
-                train_s1_recon.append(tr["recon"])
-                valid_s1_recon.append(vl["recon"])
-
-                scheduler1.step()
-
-                if best_valid_loss is None or vl["total"] < best_valid_loss:
-                    best_valid_loss = vl["total"]
-                    patience = 0
-                    best_state = {
-                        k: v.cpu() for k, v in self.model.state_dict().items()
-                    }
-                else:
-                    patience += 1
-
-                if patience >= max_patience:
-                    print("[SAINT Stage1] Early stopping")
+            if best_valid_1 is None or vl["total"] < best_valid_1:
+                best_valid_1 = vl["total"]
+                patience_1 = 0
+                best_state_1 = {
+                    k: v.detach().cpu() for k, v in self.model.state_dict().items()
+                }
+            else:
+                patience_1 += 1
+                if patience_1 >= max_patience:
+                    print(f"[SAINT] Stage1 Early stopping at epoch {epoch + 1}")
                     break
 
-            if best_state is not None:
-                self.model.load_state_dict(best_state)
-                self.model.to(self.device)
+        if best_state_1 is not None:
+            self.model.load_state_dict(best_state_1)
+            self.model.to(self.device)
 
         # -------------------------
-        # Stage 2: supervised finetuning
+        # Stage 2: supervised finetuning (missing x 기반)
         # -------------------------
-        if do_stage2:
-            optimizer2, scheduler2 = self._build_optimizer_scheduler(
-                stage_name="stage2"
+        opt2, sch2 = self._make_optimizer_scheduler(stage=2, num_epochs=stage2_epochs)
+
+        best_valid_2 = None
+        best_state_2 = None
+        patience_2 = 0
+
+        for epoch in range(stage2_epochs):
+            tr2 = self.run_epoch(tr_loader, opt2, Split.TRAIN, stage=2)
+            vl2 = self.run_epoch(vl_loader, None, Split.VALID, stage=2)
+
+            lr2 = float(opt2.param_groups[0]["lr"])
+            print(
+                f"[SAINT Stage2 Epoch {epoch + 1}] "
+                f"Train: total={tr2['total']:.4f}, ce={tr2['ce']:.4f} | "
+                f"Valid: total={vl2['total']:.4f}, ce={vl2['ce']:.4f} | "
+                f"LR: {lr2:.6f}"
             )
 
-            best_valid_loss = None
-            best_state = None
-            patience = 0
+            train_total_2.append(tr2["total"])
+            valid_total_2.append(vl2["total"])
+            train_ce_2.append(tr2["ce"])
+            valid_ce_2.append(vl2["ce"])
+            train_info_2.append(tr2["info"])
+            valid_info_2.append(vl2["info"])
+            train_recon_2.append(tr2["recon"])
+            valid_recon_2.append(vl2["recon"])
 
-            for epoch in range(num_epochs):
-                tr = self.run_epoch_stage2(tr_loader, optimizer2, Split.TRAIN)
-                vl = self.run_epoch_stage2(vl_loader, None, Split.VALID)
+            sch2.step()
 
-                lr = float(optimizer2.param_groups[0]["lr"])
-
-                print(
-                    f"[SAINT Stage2 Epoch {epoch + 1}] "
-                    f"Train: total={tr['total']:.4f}, ce={tr['ce']:.4f} | "
-                    f"Valid: total={vl['total']:.4f}, ce={vl['ce']:.4f} | "
-                    f"LR: {lr:.6f}"
-                )
-
-                train_total_all.append(tr["total"])
-                valid_total_all.append(vl["total"])
-
-                train_s2_total.append(tr["total"])
-                valid_s2_total.append(vl["total"])
-
-                train_s2_ce.append(tr["ce"])
-                valid_s2_ce.append(vl["ce"])
-
-                train_s2_info.append(0.0)
-                valid_s2_info.append(0.0)
-
-                train_s2_recon.append(0.0)
-                valid_s2_recon.append(0.0)
-
-                scheduler2.step()
-
-                if best_valid_loss is None or vl["total"] < best_valid_loss:
-                    best_valid_loss = vl["total"]
-                    patience = 0
-                    best_state = {
-                        k: v.cpu() for k, v in self.model.state_dict().items()
-                    }
-                else:
-                    patience += 1
-
-                if patience >= max_patience:
-                    print("[SAINT Stage2] Early stopping")
+            if best_valid_2 is None or vl2["total"] < best_valid_2:
+                best_valid_2 = vl2["total"]
+                patience_2 = 0
+                best_state_2 = {
+                    k: v.detach().cpu() for k, v in self.model.state_dict().items()
+                }
+            else:
+                patience_2 += 1
+                if patience_2 >= max_patience:
+                    print(f"[SAINT] Stage2 Early stopping at epoch {epoch + 1}")
                     break
 
-            if best_state is not None:
-                self.model.load_state_dict(best_state)
-                self.model.to(self.device)
+        if best_state_2 is not None:
+            self.model.load_state_dict(best_state_2)
+            self.model.to(self.device)
 
         # -------------------------
-        # Metrics (항상 동일 포맷 유지)
+        # Final metrics (Stage2 기준)
         # -------------------------
-        _, tr_preds, tr_labels, _, _ = self.predict(tr_loader, split=Split.TRAIN)
-        _, vl_preds, vl_labels, _, _ = self.predict(vl_loader, split=Split.VALID)
+        _, tr_preds, tr_labels, _, _ = self.predict(
+            tr_loader, split=Split.TRAIN, stage=2
+        )
+        _, vl_preds, vl_labels, _, _ = self.predict(
+            vl_loader, split=Split.VALID, stage=2
+        )
 
         train_metrics = compute_classification_metrics(tr_labels, tr_preds)
         valid_metrics = compute_classification_metrics(vl_labels, vl_preds)
 
         metric_name = "total_loss"
         tasks = [
-            {
-                Split.TRAIN.value: train_total_all,
-                Split.VALID.value: valid_total_all,
-            }
+            {Split.TRAIN.value: train_total_1, Split.VALID.value: valid_total_1},
+            {Split.TRAIN.value: train_total_2, Split.VALID.value: valid_total_2},
         ]
 
         components = {
             "stage1": {
                 "train": {
-                    "ce": train_s1_ce,
-                    "info": train_s1_info,
-                    "recon": train_s1_recon,
-                    "total": train_s1_total,
+                    "ce": train_ce_1,
+                    "info": train_info_1,
+                    "recon": train_recon_1,
+                    "total": train_total_1,
                 },
                 "valid": {
-                    "ce": valid_s1_ce,
-                    "info": valid_s1_info,
-                    "recon": valid_s1_recon,
-                    "total": valid_s1_total,
+                    "ce": valid_ce_1,
+                    "info": valid_info_1,
+                    "recon": valid_recon_1,
+                    "total": valid_total_1,
                 },
             },
             "stage2": {
                 "train": {
-                    "ce": train_s2_ce,
-                    "info": train_s2_info,
-                    "recon": train_s2_recon,
-                    "total": train_s2_total,
+                    "ce": train_ce_2,
+                    "info": train_info_2,
+                    "recon": train_recon_2,
+                    "total": train_total_2,
                 },
                 "valid": {
-                    "ce": valid_s2_ce,
-                    "info": valid_s2_info,
-                    "recon": valid_s2_recon,
-                    "total": valid_s2_total,
+                    "ce": valid_ce_2,
+                    "info": valid_info_2,
+                    "recon": valid_recon_2,
+                    "total": valid_total_2,
                 },
             },
         }
@@ -599,148 +572,124 @@ class SAINTAdapter(BaseModelAdapter):
                 "components": components,
             },
         }
-
         return results
 
     # -------------------------
-    # Stage1 epoch
+    # Train loop (stage=1/2 통합)
     # -------------------------
-    def run_epoch_stage1(
+    def run_epoch(
         self,
         loader: DataLoader,
         optimizer: torch.optim.Optimizer | None,
         split: Split,
+        stage: int = 1,
     ):
         if self.model is None:
-            raise ValueError("모델이 초기화되지 않았습니다.")
+            raise ValueError("model is None")
 
         is_train = split == Split.TRAIN
         self.model.train() if is_train else self.model.eval()
 
-        desc = self.get_desc("SAINT(stage1)", split)
+        desc = self.get_desc(f"SAINT_stage{stage}", split)
 
         total_sum = 0.0
+        ce_sum = 0.0
         info_sum = 0.0
         recon_sum = 0.0
         num_batches = 0
 
         for batch in tqdm(loader, desc=desc):
-            # Stage1은 논문대로 clean xi 를 사용 (x_originals)
-            _, _, x_clean, _, _, _ = self._prepare_batch(batch)
-            b, f = x_clean.shape
+            x_missing, y, x_clean, _, _, _ = self._prepare_batch(batch)
 
-            with torch.set_grad_enabled(is_train):
-                # clean view
-                tokens_clean = self.model.embed(x_clean)
-                ctx_clean = self.model.encode_tokens(tokens_clean)
-                z_clean = self.model.project_view1(ctx_clean)
+            if stage == 1:
+                # Stage1은 clean(x_originals) 사용
+                xb = x_clean
+                b, f = xb.shape
 
-                # CutMix: 먼저 배치 내 모든 샘플에 대해 CutMix 버전 생성
-                perm_a = torch.randperm(b, device=x_clean.device)
-                x_a = x_clean[perm_a]
+                with torch.set_grad_enabled(is_train):
+                    # view1 (clean)
+                    tokens_clean = self.model.embed(xb)
+                    ctx_clean = self.model.encode_tokens(tokens_clean)
+                    z_clean = self.model.project_view1(ctx_clean)
 
-                m = (torch.rand(b, f, device=x_clean.device) < self.p_cutmix).to(
-                    x_clean.dtype
-                )
-                x_cut = x_clean * m + x_a * (1.0 - m)
+                    # CutMix on input
+                    perm_a = torch.randperm(b, device=xb.device)
+                    x_a = xb[perm_a]
 
-                tokens_cut = self.model.embed(x_cut)
+                    m = (torch.rand(b, f, device=xb.device) < self.p_cutmix).to(
+                        xb.dtype
+                    )
+                    x_cut = xb * m + x_a * (1.0 - m)
 
-                # mixup: CutMix된 임베딩끼리 새로운 partner로 섞기
-                perm_b = torch.randperm(b, device=x_clean.device)
-                tokens_cut_b = tokens_cut[perm_b]
+                    tokens_cut = self.model.embed(x_cut)
 
-                alpha = self.mixup_alpha
-                tokens_mix = alpha * tokens_cut + (1.0 - alpha) * tokens_cut_b
+                    # MixUp on token embeddings
+                    perm_b = torch.randperm(b, device=xb.device)
+                    tokens_cut_b = tokens_cut[perm_b]
 
-                ctx_aug = self.model.encode_tokens(tokens_mix)
-                z_aug = self.model.project_view2(ctx_aug)
+                    alpha = self.mixup_alpha
+                    tokens_mix = alpha * tokens_cut + (1.0 - alpha) * tokens_cut_b
 
-                # losses
-                loss_info = info_nce_loss(z_clean, z_aug, self.temperature)
+                    ctx_aug = self.model.encode_tokens(tokens_mix)
+                    z_aug = self.model.project_view2(ctx_aug)
 
-                # denoising: noisy view(ctx_aug)로부터 원본 x_clean 복원
-                x_recon = self.model.reconstruct_from_ctx(ctx_aug)
-                loss_recon = F.mse_loss(x_recon, x_clean)
+                    loss_info = info_nce_loss(z_clean, z_aug, self.temperature)
 
-                loss_total = (
-                    self.lambda_view * loss_info + self.lambda_recon * loss_recon
-                )
+                    x_recon = self.model.reconstruct_from_ctx(ctx_aug)
+                    loss_recon = F.mse_loss(x_recon, xb)
 
-                if is_train:
-                    if optimizer is None:
-                        raise ValueError("TRAIN split인데 optimizer가 None 입니다.")
-                    optimizer.zero_grad()
-                    loss_total.backward()
-                    optimizer.step()
+                    loss_ce = torch.zeros((), device=self.device)
+                    loss_total = (
+                        self.lambda_view * loss_info + self.lambda_recon * loss_recon
+                    )
+
+                    if is_train:
+                        if optimizer is None:
+                            raise ValueError("TRAIN split인데 optimizer가 None 입니다.")
+                        optimizer.zero_grad()
+                        loss_total.backward()
+                        optimizer.step()
+
+            elif stage == 2:
+                # Stage2는 missing(x)로 CE finetune
+                with torch.set_grad_enabled(is_train):
+                    out = self.model(
+                        x_cont=x_missing, need_logits=True, need_recon=False
+                    )
+                    logits = out["logits"]
+                    if logits is None:
+                        raise ValueError("logits is None")
+
+                    loss_ce = F.cross_entropy(logits, y)
+                    loss_info = torch.zeros((), device=self.device)
+                    loss_recon = torch.zeros((), device=self.device)
+                    loss_total = self.lambda_cls * loss_ce
+
+                    if is_train:
+                        if optimizer is None:
+                            raise ValueError("TRAIN split인데 optimizer가 None 입니다.")
+                        optimizer.zero_grad()
+                        loss_total.backward()
+                        optimizer.step()
+            else:
+                raise ValueError(f"unknown stage: {stage}")
 
             num_batches += 1
             total_sum += float(loss_total.item())
+            ce_sum += float(loss_ce.item())
             info_sum += float(loss_info.item())
             recon_sum += float(loss_recon.item())
 
         denom = max(1, num_batches)
         return {
             "total": total_sum / denom,
-            "ce": 0.0,
+            "ce": ce_sum / denom,
             "info": info_sum / denom,
             "recon": recon_sum / denom,
         }
 
     # -------------------------
-    # Stage2 epoch
-    # -------------------------
-    def run_epoch_stage2(
-        self,
-        loader: DataLoader,
-        optimizer: torch.optim.Optimizer | None,
-        split: Split,
-    ):
-        if self.model is None:
-            raise ValueError("모델이 초기화되지 않았습니다.")
-
-        is_train = split == Split.TRAIN
-        self.model.train() if is_train else self.model.eval()
-
-        desc = self.get_desc("SAINT(stage2)", split)
-
-        total_sum = 0.0
-        ce_sum = 0.0
-        num_batches = 0
-
-        for batch in tqdm(loader, desc=desc):
-            x_missing, y, _, _, _, _ = self._prepare_batch(batch)
-
-            with torch.set_grad_enabled(is_train):
-                out = self.model(x_missing, need_logits=True, need_recon=False)
-                logits = out["logits"]
-                if logits is None:
-                    raise ValueError("logits가 None 입니다.")
-
-                loss_ce = F.cross_entropy(logits, y)
-                loss_total = self.lambda_cls * loss_ce
-
-                if is_train:
-                    if optimizer is None:
-                        raise ValueError("TRAIN split인데 optimizer가 None 입니다.")
-                    optimizer.zero_grad()
-                    loss_total.backward()
-                    optimizer.step()
-
-            num_batches += 1
-            total_sum += float(loss_total.item())
-            ce_sum += float(loss_ce.item())
-
-        denom = max(1, num_batches)
-        return {
-            "total": total_sum / denom,
-            "ce": ce_sum / denom,
-            "info": 0.0,
-            "recon": 0.0,
-        }
-
-    # -------------------------
-    # Test / Predict
+    # Test / Predict (stage=2 사용 권장)
     # -------------------------
     def test(self, test_data: Datasets):
         if self.model is None:
@@ -749,7 +698,7 @@ class SAINTAdapter(BaseModelAdapter):
         te_loader = test_data.get_loader_for_deep(shuffle=False)
 
         loss, preds_all, labels_all, pattern_idx_all, ratio_idx_all = self.predict(
-            te_loader, split=Split.TEST
+            te_loader, split=Split.TEST, stage=2
         )
 
         metrics_overall = compute_classification_metrics(labels_all, preds_all)
@@ -758,7 +707,6 @@ class SAINTAdapter(BaseModelAdapter):
         ratios = test_data.ratios
 
         metrics_by_ratio: dict[str, dict[float, dict]] = {}
-
         for p_i, pattern in enumerate(patterns):
             p_val = pattern.value
             metrics_by_ratio[p_val] = {}
@@ -771,16 +719,15 @@ class SAINTAdapter(BaseModelAdapter):
                     m = compute_classification_metrics(y_sub, y_hat_sub)
                     metrics_by_ratio[p_val][ratio] = m
 
-        results = {
+        return {
             "split": Split.TEST.value,
             "metrics_overall": metrics_overall,
             "metrics_by_ratio": metrics_by_ratio,
             "loss": float(loss),
         }
 
-        return results
-
-    def predict(self, loader: DataLoader, split: Split = Split.TEST):
+    @torch.no_grad()
+    def predict(self, loader: DataLoader, split: Split = Split.TEST, stage: int = 2):
         if self.model is None:
             raise ValueError("모델이 로드되지 않았습니다.")
 
@@ -799,22 +746,31 @@ class SAINTAdapter(BaseModelAdapter):
         for batch in tqdm(loader, desc=desc):
             x_missing, y, _, _, pattern_idx, ratio_idx = self._prepare_batch(batch)
 
-            with torch.no_grad():
-                out = self.model(x_missing, need_logits=True, need_recon=False)
+            if stage == 1:
+                # stage1은 분류 성능 평가 대상이 아니므로 logits 경로를 명시적으로 열어두되,
+                # 실제로는 stage2 평가를 권장합니다.
+                out = self.model(x_cont=x_missing, need_logits=True, need_recon=False)
                 logits = out["logits"]
                 if logits is None:
-                    raise ValueError("logits가 None 입니다.")
+                    raise ValueError("logits is None")
+            elif stage == 2:
+                out = self.model(x_cont=x_missing, need_logits=True, need_recon=False)
+                logits = out["logits"]
+                if logits is None:
+                    raise ValueError("logits is None")
+            else:
+                raise ValueError(f"unknown stage: {stage}")
 
-                loss = F.cross_entropy(logits, y)
-                preds = logits.argmax(dim=1)
+            loss = F.cross_entropy(logits, y)
+            preds = logits.argmax(dim=1)
 
             total_loss += float(loss.item())
             num_batches += 1
 
-            all_preds.append(preds.cpu())
-            all_labels.append(y.cpu())
-            all_pattern_idx.append(pattern_idx.cpu())
-            all_ratio_idx.append(ratio_idx.cpu())
+            all_preds.append(preds.detach().cpu())
+            all_labels.append(y.detach().cpu())
+            all_pattern_idx.append(pattern_idx.detach().cpu())
+            all_ratio_idx.append(ratio_idx.detach().cpu())
 
         avg_loss = total_loss / max(1, num_batches)
 
@@ -833,8 +789,8 @@ class SAINTAdapter(BaseModelAdapter):
         y = batch["y"].to(self.device)
         x_ori = batch["x_originals"].to(self.device)
         bemv = batch["bemv"].to(self.device)
-        pattern_idx = batch["pattern_idx"]
-        ratio_idx = batch["ratio_idx"]
+        pattern_idx = batch["pattern_idx"].to(self.device)
+        ratio_idx = batch["ratio_idx"].to(self.device)
         return x, y, x_ori, bemv, pattern_idx, ratio_idx
 
     def _get_model(self, input_dim: int, num_class: int | None) -> SAINT:
@@ -846,7 +802,7 @@ class SAINTAdapter(BaseModelAdapter):
         if hasattr(model_cfg, "saint_d_token"):
             d_token = int(model_cfg.saint_d_token)
         else:
-            d_token = 32
+            d_token = 192
 
         if hasattr(model_cfg, "saint_num_heads"):
             n_heads = int(model_cfg.saint_num_heads)
@@ -856,7 +812,7 @@ class SAINTAdapter(BaseModelAdapter):
         if hasattr(model_cfg, "saint_num_layers"):
             n_layers = int(model_cfg.saint_num_layers)
         else:
-            n_layers = 1
+            n_layers = 3
 
         if hasattr(model_cfg, "saint_attn_dropout"):
             attn_dropout = float(model_cfg.saint_attn_dropout)
@@ -904,33 +860,34 @@ class SAINTAdapter(BaseModelAdapter):
 
         return model
 
-    def _build_optimizer_scheduler(self, stage_name: str):
+    def _make_optimizer_scheduler(self, stage: int, num_epochs: int):
         if self.model is None:
-            raise ValueError("모델이 초기화되지 않았습니다.")
+            raise ValueError("model is None")
 
-        if stage_name == "stage1":
+        if stage == 1:
             lr = float(self.config.train.lr_stage_1)
             lr_min = float(self.config.train.lr_min_stage_1)
-        elif stage_name == "stage2":
+        elif stage == 2:
             lr = float(self.config.train.lr_stage_2)
             lr_min = float(self.config.train.lr_min_stage_2)
         else:
-            raise ValueError(f"unknown stage_name: {stage_name}")
+            raise ValueError(f"unknown stage: {stage}")
 
-        # SAINT 논문: AdamW + weight decay 0.01
+        # SAINT: AdamW + weight_decay (default 0.01)
         weight_decay = 0.01
         if hasattr(self.config.train, "weight_decay"):
             weight_decay = float(self.config.train.weight_decay)
 
-        optimizer = torch.optim.AdamW(
+        opt = torch.optim.AdamW(
             self.model.parameters(), lr=lr, weight_decay=weight_decay
         )
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-            optimizer,
-            T_max=int(self.config.train.epochs),
+
+        sch = torch.optim.lr_scheduler.CosineAnnealingLR(
+            opt,
+            T_max=max(1, int(num_epochs)),
             eta_min=lr_min,
         )
-        return optimizer, scheduler
+        return opt, sch
 
     # -------------------------
     # Save / Load
@@ -953,7 +910,6 @@ class SAINTAdapter(BaseModelAdapter):
             "model_path": str(model_path),
         }
         self.save_meta(save_dir, meta)
-
         return model_path
 
     def load(self, path: Path):
@@ -973,5 +929,4 @@ class SAINTAdapter(BaseModelAdapter):
         self.model.load_state_dict(state)
         self.model.to(self.device)
         self.model.eval()
-
         return True

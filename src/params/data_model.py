@@ -47,6 +47,9 @@ class ModelType(Enum):
 
     MDBE_3_E2E = "mdbe_3_e2e"
 
+    SAINT = "saint"
+    AGATa = "agata"
+
 
 class StageType(Enum):
     NONE = ""

@@ -657,6 +657,66 @@ def _render_latex_block_model_only(
     return "\n".join(lines) + "\n"
 
 
+def _avg_from_ratio_strs(vals_strs: list[str], ndigits: int) -> str:
+    n = len(vals_strs)
+    if n == 0:
+        raise ValueError("ratio 값이 비어 있어 Avg를 계산할 수 없습니다.")
+
+    total = Decimal("0")
+    for s in vals_strs:
+        total += Decimal(s)
+
+    avg = total / Decimal(str(n))
+    q = Decimal(f"1e-{ndigits}")
+    return str(avg.quantize(q, rounding=ROUND_HALF_UP))
+
+
+def _render_latex_block_model_only(
+    model_name: str,
+    ratio_cols: list[str],
+    mean_map: dict[str, list[str]],
+    ndigits: int = 5,
+    row_sep: str = r"\hline",
+) -> str:
+    order: list[tuple[str, str]] = [
+        ("accuracy", "Accuracy"),
+        ("f1_macro", "F1"),
+        ("precision_macro", "Precision"),
+        ("recall_macro", "Recall"),
+    ]
+
+    n = len(ratio_cols)
+    for k, _ in order:
+        if k not in mean_map:
+            raise ValueError(f"CSV 평균 행에 '{k}' 가 없습니다.")
+        if len(mean_map[k]) != n:
+            raise ValueError("메트릭별 ratio 개수가 일치하지 않습니다.")
+
+    def fmt(metric_key: str) -> tuple[str, str]:
+        vals_strs = mean_map[metric_key]
+        ratio_strs = [_format_str_number_half_up(vs, ndigits) for vs in vals_strs]
+        avg = _avg_from_ratio_strs(vals_strs, ndigits)
+        return " & ".join(ratio_strs), avg
+
+    lines: list[str] = []
+
+    # 사용자가 원하신 형태: 첫 줄에 모델 multirow만 두고,
+    # 다음 줄부터 "& Metric ..." 로 이어서 같은 행으로 만들기
+    lines.append(rf"\multirow{{4}}{{*}}{{{model_name}}}")
+
+    ratios, avg = fmt("accuracy")
+    lines.append(rf"& Accuracy  & {ratios} & {avg} \\")
+    ratios, avg = fmt("f1_macro")
+    lines.append(rf"& F1        & {ratios} & {avg} \\")
+    ratios, avg = fmt("precision_macro")
+    lines.append(rf"& Precision & {ratios} & {avg} \\")
+    ratios, avg = fmt("recall_macro")
+    lines.append(rf"& Recall    & {ratios} & {avg} \\")
+
+    lines.append(row_sep)
+    return "\n".join(lines) + "\n"
+
+
 def _maybe_write_model_block(out_dir: Path) -> None:
     if "MODEL" not in os.environ:
         return
@@ -666,22 +726,18 @@ def _maybe_write_model_block(out_dir: Path) -> None:
         return
 
     csv_path = out_dir / "metrics_by_ratio_mean_std.csv"
-    summary_path = out_dir / "summary.txt"
     if not csv_path.exists():
         raise ValueError(f"model_block 생성 실패: {csv_path} 가 없습니다.")
-    if not summary_path.exists():
-        raise ValueError(f"model_block 생성 실패: {summary_path} 가 없습니다.")
 
     fieldnames, rows = _read_ratio_csv(csv_path)
     ratio_cols, mean_map = _build_mean_row_map(fieldnames, rows)
-    overall_mean_map = _read_overall_means_from_summary(summary_path)
 
     latex = _render_latex_block_model_only(
         model_name=model_name,
         ratio_cols=ratio_cols,
         mean_map=mean_map,
-        overall_mean_map=overall_mean_map,
         ndigits=5,
+        row_sep=r"\hline",
     )
 
     out_path = out_dir / "model_block.txt"
