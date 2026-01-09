@@ -1,9 +1,9 @@
 #!/bin/bash
 
-GPU="0 1 2"
-MODE="train"  # train or test
+GPU="0 1"
+MODE="test"  # train or test
 
-JSON_PATH="outputs_auto_run/2025-12-31_06-39-21_agata_0.0_to_0.5_0.1_step_multi_mcar_zero_auto.json"
+JSON_PATH="outputs_auto_run/2026-01-09_06-56-01_hybrid_seed42_0.0_to_0.5_0.1_step_multi_mcar_zero_auto.json"
 
 # test 모드일 때 JSON path 세 번째 인자로 넘김
 if [ "$MODE" = "test" ]; then

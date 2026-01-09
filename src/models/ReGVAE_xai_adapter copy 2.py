@@ -14,7 +14,7 @@ from src.core.utils.losses import ReGVAEFinalStage1Loss, info_nce_loss
 from src.configs.configs import Config
 from src.models.base_model_adapter import BaseModelAdapter
 from src.datasets.data_class import Datasets
-from src.utils.metrics import compute_classification_metrics, compute_regression_metrics
+from src.utils.metrics import compute_classification_metrics
 from src.params.data_model import Split
 from src.utils.embedding_vis import visualize_missing_mu_tsne
 from src.utils.xai_save import save_xai_artifacts
@@ -28,13 +28,11 @@ class ReGVAEAdapterXAI(BaseModelAdapter):
         self.device = self.config.train.device
 
         self.input_dim: int | None = None
-        self.output_dim: int | None = None  # classification: num_class, regression: 1
-        self.is_regression: bool = False
+        self.num_class: int | None = None
 
         m = self.config.model
         self.use_my_loss = bool(m.use_my_loss)
 
-        # 이름은 CE지만, 회귀에서는 "예측 손실(MSE)"로 사용(옵션명 호환 유지)
         self.use_stage_1_ce = bool(m.use_stage_1_ce)
         self.lambda_stage1_ce = float(m.lambda_stage1_ce)
 
@@ -72,124 +70,17 @@ class ReGVAEAdapterXAI(BaseModelAdapter):
         self.vis_perplexity = float(m.vis_perplexity)
         self.vis_seed = int(m.vis_seed)
 
-    # -------------------------
-    # task inference
-    # -------------------------
-    def _is_regression_from_meta(self, data: Datasets) -> bool:
-        meta = data.meta
-
-        # dict meta
-        if isinstance(meta, dict):
-            if "task" in meta:
-                t = str(meta["task"]).lower()
-                if "regress" in t:
-                    return True
-                if "class" in t:
-                    return False
-                raise ValueError(f"Unknown meta.task: {meta['task']}")
-            # task 없으면 num_class 힌트 사용(회귀면 보통 0/1로 둠)
-            if "num_class" in meta:
-                nc = int(meta["num_class"])
-                if nc <= 1:
-                    return True
-                return False
-            return False
-
-        # object meta
-        if hasattr(meta, "task"):
-            t = str(meta.task).lower()
-            if "regress" in t:
-                return True
-            if "class" in t:
-                return False
-            raise ValueError(f"Unknown meta.task: {meta.task}")
-
-        if hasattr(meta, "num_class"):
-            nc = int(meta.num_class)
-            if nc <= 1:
-                return True
-            return False
-
-        return False
-
-    def _infer_num_class_from_dataset(self, data: Datasets) -> int:
-        y = data.imputed_dict["original"]["y"]
-        y = np.asarray(y)
-
-        uniq = np.unique(y)
-        assert uniq.ndim == 1
-        assert uniq.size >= 2, f"num_class must be >=2, got uniq={uniq}"
-
-        # 라벨이 0..C-1 형태인지 강제
-        assert (
-            int(uniq.min()) == 0
-        ), f"labels must start at 0, got min={uniq.min()} uniq={uniq}"
-        assert int(uniq.max()) == int(
-            uniq.size - 1
-        ), f"labels must be contiguous 0..C-1, got max={uniq.max()} size={uniq.size} uniq={uniq}"
-        return int(uniq.size)
-
-    def _infer_input_dim_output_dim(
-        self, train_data: Datasets, valid_data: Datasets
-    ) -> tuple[int, int, bool]:
-        input_dim = int(train_data.meta.input_dim)
-
-        is_reg_tr = self._is_regression_from_meta(train_data)
-        is_reg_vl = self._is_regression_from_meta(valid_data)
-        assert (
-            is_reg_tr == is_reg_vl
-        ), f"train/valid task mismatch: train={is_reg_tr} valid={is_reg_vl}"
-
-        if is_reg_tr:
-            return input_dim, 1, True
-
-        n_tr = self._infer_num_class_from_dataset(train_data)
-        n_vl = self._infer_num_class_from_dataset(valid_data)
-        assert (
-            n_tr == n_vl
-        ), f"train/valid num_class mismatch: train={n_tr}, valid={n_vl}"
-
-        n_meta = int(train_data.meta.num_class)
-        if n_meta > 0:
-            assert (
-                n_meta == n_tr
-            ), f"meta.num_class != y-derived: meta={n_meta}, y={n_tr}"
-
-        return input_dim, n_tr, False
-
-    # -------------------------
-    # pred helpers
-    # -------------------------
-    def _pred_loss(self, pred: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
-        if self.is_regression:
-            p = pred.squeeze(-1)
-            yt = y.float()
-            return F.mse_loss(p, yt)
-        return F.cross_entropy(pred, y.long())
-
-    def _pred_to_output(self, pred: torch.Tensor) -> torch.Tensor:
-        if self.is_regression:
-            return pred.squeeze(-1)
-        return pred.argmax(dim=1)
-
-    # -------------------------
-    # fit / test
-    # -------------------------
     def fit(self, train_data: Datasets, valid_data: Datasets):
         tr_loader = train_data.get_loader_for_deep(shuffle=True)
         vl_loader = valid_data.get_loader_for_deep(shuffle=False)
 
-        self.input_dim, self.output_dim, self.is_regression = (
-            self._infer_input_dim_output_dim(train_data, valid_data)
-        )
+        self.input_dim = train_data.meta.input_dim
+        self.num_class = train_data.meta.num_class
 
-        self.model = self._get_model(self.input_dim, self.output_dim)
+        self.model = self._get_model(self.input_dim, self.num_class)
 
         name = self.config.model.model.name
 
-        # -------------------------
-        # Stage 1
-        # -------------------------
         stage1_epochs = self.config.train.epochs
         opt1, sch1 = self._make_optimizer_scheduler(stage=1, num_epochs=stage1_epochs)
 
@@ -202,8 +93,8 @@ class ReGVAEAdapterXAI(BaseModelAdapter):
         valid_total_1: list[float] = []
         train_contrast_1: list[float] = []
         valid_contrast_1: list[float] = []
-        train_pred_1: list[float] = []  # 기존 cls_ce 자리 (회귀면 MSE)
-        valid_pred_1: list[float] = []
+        train_cls_ce_1: list[float] = []
+        valid_cls_ce_1: list[float] = []
         train_view_1: list[float] = []
         valid_view_1: list[float] = []
         train_kl_1: list[float] = []
@@ -218,9 +109,9 @@ class ReGVAEAdapterXAI(BaseModelAdapter):
             lr = opt1.param_groups[0]["lr"]
             print(
                 f"[{name} Stage1 Epoch {epoch + 1}] "
-                f"Train: total={tr['total']:.4f}, contrast={tr['contrast']:.4f}, pred={tr['pred']:.4f}, "
+                f"Train: total={tr['total']:.4f}, contrast={tr['contrast']:.4f}, cls_ce={tr['cls_ce']:.4f}, "
                 f"view={tr['view']:.4f}, kl={tr['kl']:.4f}, recon={tr['recon']:.4f} | "
-                f"Valid: total={vl['total']:.4f}, contrast={vl['contrast']:.4f}, pred={vl['pred']:.4f}, "
+                f"Valid: total={vl['total']:.4f}, contrast={vl['contrast']:.4f}, cls_ce={vl['cls_ce']:.4f}, "
                 f"view={vl['view']:.4f}, kl={vl['kl']:.4f}, recon={vl['recon']:.4f} | "
                 f"LR: {lr:.6f}"
             )
@@ -229,8 +120,8 @@ class ReGVAEAdapterXAI(BaseModelAdapter):
             valid_total_1.append(vl["total"])
             train_contrast_1.append(tr["contrast"])
             valid_contrast_1.append(vl["contrast"])
-            train_pred_1.append(tr["pred"])
-            valid_pred_1.append(vl["pred"])
+            train_cls_ce_1.append(tr["cls_ce"])
+            valid_cls_ce_1.append(vl["cls_ce"])
             train_view_1.append(tr["view"])
             valid_view_1.append(vl["view"])
             train_kl_1.append(tr["kl"])
@@ -281,9 +172,6 @@ class ReGVAEAdapterXAI(BaseModelAdapter):
             vis_seed=self.vis_seed,
         )
 
-        # -------------------------
-        # Stage 2
-        # -------------------------
         stage2_epochs = self.config.train.epochs
         self._load_memory_bank(mem_path, to_device=True)
         self._set_stage2_trainable()
@@ -296,8 +184,8 @@ class ReGVAEAdapterXAI(BaseModelAdapter):
 
         train_total_2: list[float] = []
         valid_total_2: list[float] = []
-        train_pred_2: list[float] = []  # 기존 ce 자리 (회귀면 MSE)
-        valid_pred_2: list[float] = []
+        train_ce_2: list[float] = []
+        valid_ce_2: list[float] = []
 
         for epoch in range(stage2_epochs):
             tr2 = self.run_epoch(
@@ -310,15 +198,15 @@ class ReGVAEAdapterXAI(BaseModelAdapter):
             lr2 = opt2.param_groups[0]["lr"]
             print(
                 f"[{name} Stage2 Epoch {epoch + 1}] "
-                f"Train: total={tr2['total']:.4f}, pred={tr2['pred']:.4f} | "
-                f"Valid: total={vl2['total']:.4f}, pred={vl2['pred']:.4f} | "
+                f"Train: total={tr2['total']:.4f}, ce={tr2['ce']:.4f} | "
+                f"Valid: total={vl2['total']:.4f}, ce={vl2['ce']:.4f} | "
                 f"LR: {lr2:.6f}"
             )
 
             train_total_2.append(tr2["total"])
             valid_total_2.append(vl2["total"])
-            train_pred_2.append(tr2["pred"])
-            valid_pred_2.append(vl2["pred"])
+            train_ce_2.append(tr2["ce"])
+            valid_ce_2.append(vl2["ce"])
 
             sch2.step()
 
@@ -338,7 +226,6 @@ class ReGVAEAdapterXAI(BaseModelAdapter):
             self.model.load_state_dict(best_state2)
             self.model.to(self.device)
 
-        # XAI 저장(회귀도 동일: gate/retr/attn)
         _, _, _, _, _, xai_valid = self.predict_xai(
             loader=vl_loader,
             split=Split.VALID,
@@ -370,14 +257,8 @@ class ReGVAEAdapterXAI(BaseModelAdapter):
             return_xai=False,
         )
 
-        if self.is_regression:
-            train_metrics = compute_regression_metrics(tr_labels, tr_preds)
-            valid_metrics = compute_regression_metrics(vl_labels, vl_preds)
-            task_name = "regression"
-        else:
-            train_metrics = compute_classification_metrics(tr_labels, tr_preds)
-            valid_metrics = compute_classification_metrics(vl_labels, vl_preds)
-            task_name = "classification"
+        train_metrics = compute_classification_metrics(tr_labels, tr_preds)
+        valid_metrics = compute_classification_metrics(vl_labels, vl_preds)
 
         metric_name = "total_loss"
         tasks = [
@@ -389,28 +270,31 @@ class ReGVAEAdapterXAI(BaseModelAdapter):
             "stage1": {
                 "train": {
                     "contrast": train_contrast_1,
-                    "pred": train_pred_1,
+                    "cls_ce": train_cls_ce_1,
                     "view": train_view_1,
                     "kl": train_kl_1,
                     "recon": train_recon_1,
                 },
                 "valid": {
                     "contrast": valid_contrast_1,
-                    "pred": valid_pred_1,
+                    "cls_ce": valid_cls_ce_1,
                     "view": valid_view_1,
                     "kl": valid_kl_1,
                     "recon": valid_recon_1,
                 },
             },
             "stage2": {
-                "train": {"pred": train_pred_2},
-                "valid": {"pred": valid_pred_2},
+                "train": {
+                    "ce": train_ce_2,
+                },
+                "valid": {
+                    "ce": valid_ce_2,
+                },
             },
         }
 
         results = {
             "split": Split.TRAIN.value,
-            "task": task_name,
             f"{Split.TRAIN.value}_metrics": train_metrics,
             f"{Split.VALID.value}_metrics": valid_metrics,
             "loss": {
@@ -418,8 +302,8 @@ class ReGVAEAdapterXAI(BaseModelAdapter):
                 "tasks": tasks,
                 "components": components,
                 "stage1_rep_loss": "contrast" if self.use_my_loss else "info_nce",
-                "stage1_use_pred_loss": bool(self.use_stage_1_ce),
-                "stage1_pred_weight": float(self.lambda_stage1_ce),
+                "stage1_use_cls_ce": bool(self.use_stage_1_ce),
+                "stage1_cls_ce_weight": float(self.lambda_stage1_ce),
             },
             "artifacts": {
                 "memory_bank": str(mem_path),
@@ -448,7 +332,11 @@ class ReGVAEAdapterXAI(BaseModelAdapter):
         self._load_memory_bank(mem_path, to_device=True)
 
         loss, preds_all, labels_all, pattern_idx_all, ratio_idx_all = self.predict(
-            te_loader, split=Split.TEST, stage=2, memory_path=mem_path, return_xai=False
+            te_loader,
+            split=Split.TEST,
+            stage=2,
+            memory_path=mem_path,
+            return_xai=False,
         )
 
         _, _, _, _, _, xai_test = self.predict_xai(
@@ -460,13 +348,14 @@ class ReGVAEAdapterXAI(BaseModelAdapter):
         )
         xai_dir = root / "xai"
         save_xai_artifacts(
-            xai=xai_test, save_dir=xai_dir, tag="test_stage2", top_rows=64, topk_feat=10
+            xai=xai_test,
+            save_dir=xai_dir,
+            tag="test_stage2",
+            top_rows=64,
+            topk_feat=10,
         )
 
-        if self.is_regression:
-            metrics_overall = compute_regression_metrics(labels_all, preds_all)
-        else:
-            metrics_overall = compute_classification_metrics(labels_all, preds_all)
+        metrics_overall = compute_classification_metrics(labels_all, preds_all)
 
         patterns = test_data.config.data.missing_patterns
         ratios = test_data.ratios
@@ -482,24 +371,17 @@ class ReGVAEAdapterXAI(BaseModelAdapter):
                 if np.any(mask):
                     y_sub = labels_all[mask]
                     y_hat_sub = preds_all[mask]
-                    if self.is_regression:
-                        m = compute_regression_metrics(y_sub, y_hat_sub)
-                    else:
-                        m = compute_classification_metrics(y_sub, y_hat_sub)
+                    m = compute_classification_metrics(y_sub, y_hat_sub)
                     metrics_by_ratio[p_val][ratio] = m
 
         return {
             "split": Split.TEST.value,
-            "task": "regression" if self.is_regression else "classification",
             "metrics_overall": metrics_overall,
             "metrics_by_ratio": metrics_by_ratio,
             "loss": float(loss),
             "artifacts": {"xai_dir": str(xai_dir)},
         }
 
-    # -------------------------
-    # predict / xai
-    # -------------------------
     @torch.no_grad()
     def predict_xai(
         self,
@@ -539,7 +421,8 @@ class ReGVAEAdapterXAI(BaseModelAdapter):
 
         total_sum = 0.0
         contrast_sum = 0.0
-        pred_sum = 0.0
+        cls_ce_sum = 0.0
+        ce_sum = 0.0
         view_sum = 0.0
         kl_sum = 0.0
         recon_sum = 0.0
@@ -548,7 +431,8 @@ class ReGVAEAdapterXAI(BaseModelAdapter):
         for batch in tqdm(loader, desc=desc):
             loss_total = torch.zeros((), device=self.device)
             loss_contrast = torch.zeros((), device=self.device)
-            loss_pred = torch.zeros((), device=self.device)
+            loss_cls_ce = torch.zeros((), device=self.device)
+            loss_ce = torch.zeros((), device=self.device)
             loss_view = torch.zeros((), device=self.device)
             loss_kl = torch.zeros((), device=self.device)
             loss_recon = torch.zeros((), device=self.device)
@@ -568,9 +452,6 @@ class ReGVAEAdapterXAI(BaseModelAdapter):
                     if self.use_my_loss:
                         if self.stage1_loss is None:
                             raise ValueError("stage1_loss is None")
-
-                        y_for_loss = None if self.is_regression else y_base
-
                         loss_dict = self.stage1_loss(
                             mu_clean=out_clean["z_mu"],
                             logvar_clean=out_clean["z_logvar"],
@@ -579,7 +460,7 @@ class ReGVAEAdapterXAI(BaseModelAdapter):
                             x_clean=x_clean,
                             recon_clean=out_clean["recon"],
                             recon_missing=out_missing["recon"],
-                            y_base=y_for_loss,  # regression이면 None
+                            y_base=y_base,
                             views_per_base=V,
                         )
                         loss_total = loss_dict["total"]
@@ -598,18 +479,15 @@ class ReGVAEAdapterXAI(BaseModelAdapter):
                         )
                         loss_total = loss_contrast
 
-                    # stage1 예측 손실(옵션명 유지: use_stage_1_ce)
                     if self.use_stage_1_ce:
-                        pred_clean = out_clean["logits"]
-                        pred_missing = out_missing["logits"]
-                        if pred_clean is None or pred_missing is None:
-                            raise ValueError(
-                                "use_stage_1_ce=True requires logits in ReGVAE forward output."
-                            )
-                        l_clean = self._pred_loss(pred_clean, y_base)
-                        l_miss = self._pred_loss(pred_missing, y)
-                        loss_pred = 0.5 * (l_clean + l_miss)
-                        loss_total = loss_total + self.lambda_stage1_ce * loss_pred
+                        logits_clean = out_clean["logits"]
+                        logits_missing = out_missing["logits"]
+                        if logits_clean is None or logits_missing is None:
+                            raise ValueError("use_stage_1_ce=True requires logits.")
+                        ce_clean = F.cross_entropy(logits_clean, y_base)
+                        ce_missing = F.cross_entropy(logits_missing, y)
+                        loss_cls_ce = 0.5 * (ce_clean + ce_missing)
+                        loss_total = loss_total + self.lambda_stage1_ce * loss_cls_ce
 
                     if is_train:
                         optimizer.zero_grad()
@@ -626,10 +504,10 @@ class ReGVAEAdapterXAI(BaseModelAdapter):
                     )
 
                     fused = self.model.feat_gate(mu_q, mu_r)
-                    pred = self.model.cls_head(fused)
+                    logits = self.model.cls_head(fused)
 
-                    loss_pred = self._pred_loss(pred, y)
-                    loss_total = loss_pred
+                    loss_ce = F.cross_entropy(logits, y)
+                    loss_total = loss_ce
 
                     if is_train:
                         optimizer.zero_grad()
@@ -639,7 +517,8 @@ class ReGVAEAdapterXAI(BaseModelAdapter):
             num_batches += 1
             total_sum += float(loss_total.item())
             contrast_sum += float(loss_contrast.item())
-            pred_sum += float(loss_pred.item())
+            cls_ce_sum += float(loss_cls_ce.item())
+            ce_sum += float(loss_ce.item())
             view_sum += float(loss_view.item())
             kl_sum += float(loss_kl.item())
             recon_sum += float(loss_recon.item())
@@ -648,7 +527,8 @@ class ReGVAEAdapterXAI(BaseModelAdapter):
         return {
             "total": total_sum / denom,
             "contrast": contrast_sum / denom,
-            "pred": pred_sum / denom,
+            "cls_ce": cls_ce_sum / denom,
+            "ce": ce_sum / denom,
             "view": view_sum / denom,
             "kl": kl_sum / denom,
             "recon": recon_sum / denom,
@@ -703,8 +583,8 @@ class ReGVAEAdapterXAI(BaseModelAdapter):
 
             if stage == 1:
                 out = self.model(x_cont=x, x_cat=None, return_attn=return_xai)
-                pred = out["logits"]
-                if pred is None:
+                logits = out["logits"]
+                if logits is None:
                     raise ValueError("stage1 logits is None")
                 if return_xai:
                     attn_cls_feat = self._extract_cls_to_feature_attention(out)
@@ -718,7 +598,7 @@ class ReGVAEAdapterXAI(BaseModelAdapter):
                 )
 
                 fused, g = self.model.feat_gate(mu_q, mu_r, return_gate=True)
-                pred = self.model.cls_head(fused)
+                logits = self.model.cls_head(fused)
 
                 if return_xai:
                     xai_pack["gate_g"].append(g.detach().cpu())
@@ -729,13 +609,13 @@ class ReGVAEAdapterXAI(BaseModelAdapter):
                     attn_cls_feat = self._extract_cls_to_feature_attention(out)
                     xai_pack["attn_cls_feat"].append(attn_cls_feat.detach().cpu())
 
-            loss = self._pred_loss(pred, y)
-            out_pred = self._pred_to_output(pred)
+            loss = F.cross_entropy(logits, y)
+            preds = logits.argmax(dim=1)
 
             total_loss += float(loss.item())
             num_batches += 1
 
-            all_preds.append(out_pred.detach().cpu())
+            all_preds.append(preds.detach().cpu())
             all_labels.append(y.detach().cpu())
             all_pattern_idx.append(pattern_idx.detach().cpu())
             all_ratio_idx.append(ratio_idx.detach().cpu())
@@ -758,9 +638,6 @@ class ReGVAEAdapterXAI(BaseModelAdapter):
 
         return avg_loss, preds_all, labels_all, pattern_idx_all, ratio_idx_all, xai_out
 
-    # -------------------------
-    # memory bank
-    # -------------------------
     @torch.no_grad()
     def export_clean_memory_bank(
         self, dataset: Datasets, save_dir: Path, tag: str = "train"
@@ -786,19 +663,13 @@ class ReGVAEAdapterXAI(BaseModelAdapter):
 
         mu_all = torch.cat(mu_list, dim=0)
 
-        if self.is_regression:
-            y_t = torch.from_numpy(np.asarray(y_clean, dtype=np.float32)).float()
-        else:
-            y_t = torch.from_numpy(np.asarray(y_clean, dtype=np.int64)).long()
-
         out = {
             "mu": mu_all,
-            "y": y_t,
+            "y": torch.from_numpy(y_clean).long(),
             "idx": torch.arange(N, dtype=torch.long),
             "meta": {
-                "task": "regression" if self.is_regression else "classification",
                 "input_dim": dataset.meta.input_dim,
-                "output_dim": self.output_dim,
+                "num_class": dataset.meta.num_class,
                 "ratios": dataset.ratios,
                 "patterns": [p.value for p in dataset.config.data.missing_patterns],
             },
@@ -879,9 +750,6 @@ class ReGVAEAdapterXAI(BaseModelAdapter):
         mu_r = (mu_knn * w.unsqueeze(-1)).sum(dim=1)
         return mu_r, best_idx, best_sim, w
 
-    # -------------------------
-    # trainables / optim
-    # -------------------------
     def _set_stage2_trainable(self):
         if self.model is None:
             raise ValueError("model is None")
@@ -914,9 +782,6 @@ class ReGVAEAdapterXAI(BaseModelAdapter):
         )
         return opt, sch
 
-    # -------------------------
-    # attn extraction
-    # -------------------------
     def _extract_cls_to_feature_attention(
         self, out: Dict[str, torch.Tensor | None]
     ) -> torch.Tensor:
@@ -942,13 +807,7 @@ class ReGVAEAdapterXAI(BaseModelAdapter):
 
     def _prepare_batch(self, batch: dict):
         x = batch["x"].to(self.device)
-
-        y_raw = batch["y"].to(self.device)
-        if self.is_regression:
-            y = y_raw.float()
-        else:
-            y = y_raw.long()
-
+        y = batch["y"].to(self.device)
         x_ori = batch["x_originals"].to(self.device)
         bemv = batch["bemv"].to(self.device)
         pattern_idx = batch["pattern_idx"].to(self.device)
@@ -958,27 +817,21 @@ class ReGVAEAdapterXAI(BaseModelAdapter):
         B0 = batch["base_batch_size"].item()
         return x, y, x_ori, bemv, pattern_idx, ratio_idx, base_idx, B0, V
 
-    # -------------------------
-    # model
-    # -------------------------
-    def _get_model(self, input_dim: int, output_dim: int | None) -> ReGVAE:
-        if output_dim is None:
-            raise ValueError("output_dim is None")
+    def _get_model(self, input_dim: int, num_class: int | None) -> ReGVAE:
+        if num_class is None:
+            raise ValueError("num_class is None")
 
         ft_kwargs = ReGVAE.get_default_kwargs()
         model = ReGVAE(
             n_cont_features=input_dim,
             cat_cardinalities=[],
-            d_out=output_dim,
+            d_out=num_class,
             latent_dim=None,
             logits_from="mu",
             **ft_kwargs,
         ).to(self.device)
         return model
 
-    # -------------------------
-    # save / load
-    # -------------------------
     def save(self, path: Path):
         if self.model is None:
             raise ValueError("model is None")
@@ -990,9 +843,8 @@ class ReGVAEAdapterXAI(BaseModelAdapter):
         torch.save(self.model.state_dict(), model_path)
 
         meta = {
-            "task": "regression" if self.is_regression else "classification",
             "input_dim": self.input_dim,
-            "output_dim": self.output_dim,
+            "num_class": self.num_class,
             "model_path": str(model_path),
         }
         self.save_meta(save_dir, meta)
@@ -1002,19 +854,11 @@ class ReGVAEAdapterXAI(BaseModelAdapter):
         save_dir = path / Split.TRAIN.value / "save"
         meta = self.load_meta(save_dir)
 
-        task = meta["task"] if "task" in meta else "classification"
-        if task == "regression":
-            self.is_regression = True
-        elif task == "classification":
-            self.is_regression = False
-        else:
-            raise ValueError(f"Unknown saved task: {task}")
-
-        self.input_dim = int(meta["input_dim"])
-        self.output_dim = int(meta["output_dim"])
+        self.input_dim = meta["input_dim"]
+        self.num_class = meta["num_class"]
 
         model_path = Path(meta["model_path"])
-        self.model = self._get_model(self.input_dim, self.output_dim)
+        self.model = self._get_model(self.input_dim, self.num_class)
 
         state = torch.load(model_path, map_location=self.device)
         self.model.load_state_dict(state)

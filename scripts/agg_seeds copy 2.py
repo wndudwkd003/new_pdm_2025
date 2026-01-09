@@ -135,20 +135,21 @@ def load_results(run_dir: Path, test_index: int | None = None) -> RunMetrics:
 
 
 def aggregate_metrics_list(metrics_list: List[Dict]) -> Dict:
+    """
+    단일 run 에서의 classification metrics(dict)를 여러 seed에 대해 평균/표준편차 산출.
+    """
     if len(metrics_list) == 0:
         raise ValueError("aggregate_metrics_list(): metrics_list 가 비었습니다.")
 
     base = metrics_list[0]
 
-    has_per_class = ("per_class" in base) and isinstance(base["per_class"], dict)
-
-    # 공통 scalar 키: per_class/num_samples 제외
     scalar_keys = [k for k in base.keys() if k not in ("per_class", "num_samples")]
 
     result: Dict = {
         "num_runs": len(metrics_list),
         "num_samples": int(base["num_samples"]),
         "scalars": {},
+        "per_class": {},
     }
 
     for key in scalar_keys:
@@ -159,28 +160,24 @@ def aggregate_metrics_list(metrics_list: List[Dict]) -> Dict:
             "values": [float(v) for v in vals],
         }
 
-    # ----- classification 전용: per_class 집계 -----
-    if has_per_class:
-        result["per_class"] = {}
+    per_class_base = base["per_class"]
+    class_keys = sorted(per_class_base.keys(), key=lambda s: int(s))
 
-        per_class_base = base["per_class"]
-        class_keys = sorted(per_class_base.keys(), key=lambda s: int(s))
+    for cls in class_keys:
+        result["per_class"][cls] = {}
 
-        for cls in class_keys:
-            result["per_class"][cls] = {}
+        for metric_name in ("precision", "recall", "f1"):
+            vals = np.array(
+                [float(m["per_class"][cls][metric_name]) for m in metrics_list],
+                dtype=float,
+            )
+            result["per_class"][cls][metric_name] = {
+                "mean": float(vals.mean()),
+                "std": float(vals.std(ddof=0)),
+                "values": [float(v) for v in vals],
+            }
 
-            for metric_name in ("precision", "recall", "f1"):
-                vals = np.array(
-                    [float(m["per_class"][cls][metric_name]) for m in metrics_list],
-                    dtype=float,
-                )
-                result["per_class"][cls][metric_name] = {
-                    "mean": float(vals.mean()),
-                    "std": float(vals.std(ddof=0)),
-                    "values": [float(v) for v in vals],
-                }
-
-            result["per_class"][cls]["support"] = int(per_class_base[cls]["support"])
+        result["per_class"][cls]["support"] = int(per_class_base[cls]["support"])
 
     return result
 
@@ -220,7 +217,6 @@ def _combine_metrics_over_nonzero_ratios(metrics_list: List[Dict]) -> Dict:
         )
 
     base = metrics_list[0]
-    has_per_class = ("per_class" in base) and isinstance(base["per_class"], dict)
 
     scalar_keys = [k for k in base.keys() if k not in ("per_class", "num_samples")]
 
@@ -235,32 +231,29 @@ def _combine_metrics_over_nonzero_ratios(metrics_list: List[Dict]) -> Dict:
         vals = np.array([float(m[key]) for m in metrics_list], dtype=float)
         combined[key] = float(vals.mean())
 
-    # ----- classification 전용 -----
-    if has_per_class:
-        per_class_base = base["per_class"]
-        class_keys = sorted(per_class_base.keys(), key=lambda s: int(s))
+    per_class_base = base["per_class"]
+    class_keys = sorted(per_class_base.keys(), key=lambda s: int(s))
 
-        combined_per_class: Dict[str, Dict] = {}
+    combined_per_class: Dict[str, Dict] = {}
 
-        for cls in class_keys:
-            cls_dict: Dict = {}
+    for cls in class_keys:
+        cls_dict: Dict = {}
 
-            for metric_name in ("precision", "recall", "f1"):
-                vals: List[float] = []
-                for m in metrics_list:
-                    vals.append(float(m["per_class"][cls][metric_name]))
-                arr = np.array(vals, dtype=float)
-                cls_dict[metric_name] = float(arr.mean())
-
-            total_support = 0
+        for metric_name in ("precision", "recall", "f1"):
+            vals: List[float] = []
             for m in metrics_list:
-                total_support += int(m["per_class"][cls]["support"])
-            cls_dict["support"] = int(total_support)
+                vals.append(float(m["per_class"][cls][metric_name]))
+            arr = np.array(vals, dtype=float)
+            cls_dict[metric_name] = float(arr.mean())
 
-            combined_per_class[cls] = cls_dict
+        total_support = 0
+        for m in metrics_list:
+            total_support += int(m["per_class"][cls]["support"])
+        cls_dict["support"] = int(total_support)
 
-        combined["per_class"] = combined_per_class
+        combined_per_class[cls] = cls_dict
 
+    combined["per_class"] = combined_per_class
     return combined
 
 
@@ -422,31 +415,9 @@ def plot_ratio_curves(agg_by_ratio: Dict[str, Dict[float, Dict]], out_dir: Path)
             plt.grid(True, linestyle="--", alpha=0.5)
             plt.ylim(0.0, 1.0)
             plt.tight_layout()
-            fname_fixed = f"{pattern}_ratio_{metric_key}_fixed01_backup.png"
+            fname_fixed = f"{pattern}_ratio_{metric_key}_fixed01.png"
             plt.savefig(pattern_dir / fname_fixed, dpi=150)
             plt.close()
-
-            # plot_ratio_curves() 안에서 metric_key 루프 내부에
-            vals_all = np.asarray(all_values_for_zoom, dtype=float)
-            finite = np.isfinite(vals_all)
-            vmin = float(vals_all[finite].min())
-            vmax = float(vals_all[finite].max())
-
-            is_prob_like = (vmin >= 0.0) and (vmax <= 1.0)
-
-            if is_prob_like:
-                plt.figure(figsize=(5, 4))
-                plt.plot(xs_arr, means_arr, marker="o")
-                plt.fill_between(xs_arr, mins_arr, maxs_arr, alpha=0.2)
-                plt.xlabel("missing ratio")
-                plt.ylabel(metric_key)
-                plt.title(f"{pattern} - {metric_key} vs missing ratio (fixed 0-1)")
-                plt.grid(True, linestyle="--", alpha=0.5)
-                plt.ylim(0.0, 1.0)
-                plt.tight_layout()
-                fname_fixed = f"{pattern}_ratio_{metric_key}_fixed01.png"
-                plt.savefig(pattern_dir / fname_fixed, dpi=150)
-                plt.close()
 
             plt.figure(figsize=(5, 4))
             plt.plot(xs_arr, means_arr, marker="o")
@@ -761,112 +732,16 @@ def _maybe_write_model_block(out_dir: Path) -> None:
     fieldnames, rows = _read_ratio_csv(csv_path)
     ratio_cols, mean_map = _build_mean_row_map(fieldnames, rows)
 
-    # 분류/회귀 자동 판별 + 회귀는 RMSE/MSE(원본/정규화)만
-    if "accuracy" in mean_map:
-        order = [
-            ("accuracy", "Accuracy"),
-            ("f1_macro", "F1"),
-            ("precision_macro", "Precision"),
-            ("recall_macro", "Recall"),
-        ]
-    else:
-        # 회귀: 원본 + 정규화(range)만 표에 포함
-        order = [
-            ("rmse", "RMSE"),
-            ("nrmse_range", "NRMSE(range)"),
-            ("mae", "MAE"),
-            ("nmae_range", "NMAE(range)"),
-        ]
-
-    latex = _render_latex_block_model_only_generic(
+    latex = _render_latex_block_model_only(
         model_name=model_name,
         ratio_cols=ratio_cols,
         mean_map=mean_map,
-        order=order,
         ndigits=5,
         row_sep=r"\hline",
     )
 
     out_path = out_dir / "model_block.txt"
     out_path.write_text(latex, encoding="utf-8", errors="strict")
-
-
-def compute_regression_metrics(y_true: np.ndarray, y_pred: np.ndarray) -> dict:
-    y_true = np.asarray(y_true, dtype=np.float32).reshape(-1)
-    y_pred = np.asarray(y_pred, dtype=np.float32).reshape(-1)
-
-    err = y_true - y_pred
-    mae = float(np.mean(np.abs(err)))
-    mse = float(np.mean(err**2))
-    rmse = float(np.sqrt(mse))
-
-    y_mean = float(np.mean(y_true))
-    ss_tot = float(np.sum((y_true - y_mean) ** 2))
-    ss_res = float(np.sum((y_true - y_pred) ** 2))
-    r2 = 1.0 - (ss_res / ss_tot) if ss_tot != 0.0 else 0.0
-
-    y_min = float(np.min(y_true))
-    y_max = float(np.max(y_true))
-    y_range = y_max - y_min
-
-    nrmse_range = (rmse / y_range) if y_range != 0.0 else 0.0
-    nmae_range = (mae / y_range) if y_range != 0.0 else 0.0
-    nmse_range = (mse / (y_range**2)) if y_range != 0.0 else 0.0
-
-    y_std = float(np.std(y_true))
-    nrmse_std = (rmse / y_std) if y_std != 0.0 else 0.0
-    nmae_std = (mae / y_std) if y_std != 0.0 else 0.0
-    nmse_std = (mse / (y_std**2)) if y_std != 0.0 else 0.0
-
-    return {
-        "mae": mae,
-        "mse": mse,
-        "rmse": rmse,
-        "r2": float(r2),
-        "nrmse_range": float(nrmse_range),
-        "nmae_range": float(nmae_range),
-        "nmse_range": float(nmse_range),
-        "nrmse_std": float(nrmse_std),
-        "nmae_std": float(nmae_std),
-        "nmse_std": float(nmse_std),
-    }
-
-
-def _render_latex_block_model_only_generic(
-    model_name: str,
-    ratio_cols: list[str],
-    mean_map: dict[str, list[str]],
-    order: list[tuple[str, str]],
-    ndigits: int = 5,
-    row_sep: str = r"\hline",
-) -> str:
-    n = len(ratio_cols)
-
-    for k, _ in order:
-        if k not in mean_map:
-            raise ValueError(f"CSV 평균 행에 '{k}' 가 없습니다.")
-        if len(mean_map[k]) != n:
-            raise ValueError("메트릭별 ratio 개수가 일치하지 않습니다.")
-
-    def fmt(metric_key: str) -> tuple[str, str]:
-        vals_strs = mean_map[metric_key]
-        ratio_strs = [_format_str_number_half_up(vs, ndigits) for vs in vals_strs]
-        avg = _avg_from_ratio_strs(vals_strs, ndigits)
-        return " & ".join(ratio_strs), avg
-
-    # ✅ 여기 추가: display(예: Accuracy, F1, Precision, Recall) 최대 길이로 패딩
-    label_w = max(len(display) for _, display in order)
-
-    lines: list[str] = []
-    lines.append(rf"\multirow{{{len(order)}}}{{*}}{{{model_name}}}")
-
-    for metric_key, display in order:
-        ratios, avg = fmt(metric_key)
-        display_pad = display.ljust(label_w)  # ✅ 핵심
-        lines.append(rf"& {display_pad} & {ratios} & {avg} \\")
-
-    lines.append(row_sep)
-    return "\n".join(lines) + "\n"
 
 
 def main():

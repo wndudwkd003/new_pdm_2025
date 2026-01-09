@@ -7,9 +7,16 @@ import matplotlib.pyplot as plt
 
 
 CLASS_COLOR_PALETTE = [
-    "tab:blue", "tab:orange", "tab:green", "tab:red",
-    "tab:purple", "tab:brown", "tab:pink", "tab:gray",
-    "tab:olive", "tab:cyan",
+    "tab:blue",
+    "tab:orange",
+    "tab:green",
+    "tab:red",
+    "tab:purple",
+    "tab:brown",
+    "tab:pink",
+    "tab:gray",
+    "tab:olive",
+    "tab:cyan",
 ]
 
 
@@ -24,8 +31,8 @@ def _plot_grouped_bars(
 
     plt.figure()
     plt.bar(x - width, metrics["precision"], width, label="precision")
-    plt.bar(x,          metrics["recall"],   width, label="recall")
-    plt.bar(x + width,  metrics["f1"],       width, label="f1")
+    plt.bar(x, metrics["recall"], width, label="recall")
+    plt.bar(x + width, metrics["f1"], width, label="f1")
 
     plt.xticks(x, classes)
     plt.xlabel("Class")
@@ -55,7 +62,7 @@ def plot_metric_over_ratio(
     ys: list[float] = []
 
     for r in ratios:
-        m = metrics_by_ratio[r]      # m: classification metrics dict
+        m = metrics_by_ratio[r]  # m: classification metrics dict
         ys.append(float(m[metric_key]))
 
     # 1) 자동 스케일 그래프
@@ -79,9 +86,26 @@ def plot_metric_over_ratio(
     plt.grid(True)
     plt.ylim(0.0, 1.0)
     plt.tight_layout()
-    outpath_fixed = save_dir / f"{prefix}_ratio_{metric_key}_fixed01.png"
+    outpath_fixed = save_dir / f"{prefix}_ratio_{metric_key}_fixed01_backup.png"
     plt.savefig(outpath_fixed, dpi=150)
     plt.close()
+
+    # 2) y축 [0,1] 고정 그래프 (0~1 범위일 때만)
+    y_min = float(min(ys)) if len(ys) > 0 else 0.0
+    y_max = float(max(ys)) if len(ys) > 0 else 0.0
+
+    if y_min >= 0.0 and y_max <= 1.0:
+        plt.figure()
+        plt.plot(ratios, ys, marker="o")
+        plt.xlabel("missing ratio")
+        plt.ylabel(metric_key)
+        plt.title(f"{prefix} - {metric_key} vs missing ratio (fixed 0-1)")
+        plt.grid(True)
+        plt.ylim(0.0, 1.0)
+        plt.tight_layout()
+        outpath_fixed = save_dir / f"{prefix}_ratio_{metric_key}_fixed01.png"
+        plt.savefig(outpath_fixed, dpi=150)
+        plt.close()
 
 
 def save_metrics_artifacts(
@@ -106,8 +130,8 @@ def save_metrics_artifacts(
     if "per_class" in metrics and isinstance(metrics["per_class"], dict):
         cls_keys = sorted(metrics["per_class"].keys(), key=lambda s: int(s))
         prec = [metrics["per_class"][k]["precision"] for k in cls_keys]
-        rec  = [metrics["per_class"][k]["recall"]    for k in cls_keys]
-        f1   = [metrics["per_class"][k]["f1"]        for k in cls_keys]
+        rec = [metrics["per_class"][k]["recall"] for k in cls_keys]
+        f1 = [metrics["per_class"][k]["f1"] for k in cls_keys]
 
         _plot_grouped_bars(
             cls_keys,
@@ -118,31 +142,59 @@ def save_metrics_artifacts(
 
     # 3) 전체 요약 텍스트
     with open(save_dir / "summary.txt", "w", encoding="utf-8") as f:
+        # ---- classification ----
         if "accuracy" in metrics:
-            f.write(f"accuracy: {metrics['accuracy']:.6f}\n")
+            f.write(f"accuracy: {float(metrics['accuracy']):.6f}\n")
 
         if "precision_micro" in metrics:
             f.write(
                 "precision_micro: "
-                f"{metrics['precision_micro']:.6f}, "
+                f"{float(metrics['precision_micro']):.6f}, "
                 "recall_micro: "
-                f"{metrics['recall_micro']:.6f}, "
+                f"{float(metrics['recall_micro']):.6f}, "
                 "f1_micro: "
-                f"{metrics['f1_micro']:.6f}\n"
+                f"{float(metrics['f1_micro']):.6f}\n"
             )
 
         if "precision_macro" in metrics:
             f.write(
                 "precision_macro: "
-                f"{metrics['precision_macro']:.6f}, "
+                f"{float(metrics['precision_macro']):.6f}, "
                 "recall_macro: "
-                f"{metrics['recall_macro']:.6f}, "
+                f"{float(metrics['recall_macro']):.6f}, "
                 "f1_macro: "
-                f"{metrics['f1_macro']:.6f}\n"
+                f"{float(metrics['f1_macro']):.6f}\n"
+            )
+
+        # ---- regression ----
+        if "rmse" in metrics:
+            f.write(
+                "rmse: "
+                f"{float(metrics['rmse']):.6f}, "
+                "mae: "
+                f"{float(metrics['mae']):.6f}, "
+                "r2: "
+                f"{float(metrics['r2']):.6f}\n"
+            )
+
+        if "nrmse_range" in metrics:
+            f.write(
+                "nrmse_range: "
+                f"{float(metrics['nrmse_range']):.6f}, "
+                "nmae_range: "
+                f"{float(metrics['nmae_range']):.6f}\n"
+            )
+
+        if "nrmse_std" in metrics:
+            f.write(
+                "nrmse_std: "
+                f"{float(metrics['nrmse_std']):.6f}, "
+                "nmae_std: "
+                f"{float(metrics['nmae_std']):.6f}\n"
             )
 
         if "num_samples" in metrics:
-            f.write(f"num_samples: {metrics['num_samples']}\n")
+            f.write(f"num_samples: {int(metrics['num_samples'])}\n")
 
 
 # -------------------- loss history 시각화 --------------------
@@ -322,9 +374,13 @@ def save_history_artifacts(
 
             comp_names = set()
             if isinstance(train_comp, dict):
-                comp_names.update(k for k in train_comp.keys() if train_comp[k] is not None)
+                comp_names.update(
+                    k for k in train_comp.keys() if train_comp[k] is not None
+                )
             if isinstance(valid_comp, dict):
-                comp_names.update(k for k in valid_comp.keys() if valid_comp[k] is not None)
+                comp_names.update(
+                    k for k in valid_comp.keys() if valid_comp[k] is not None
+                )
 
             for comp_name in sorted(comp_names):
                 train_series = train_comp.get(comp_name)

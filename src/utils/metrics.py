@@ -105,26 +105,43 @@ def compute_classification_metrics(
     }
 
 
-def compute_regression_metrics(y_true: np.ndarray, y_pred: np.ndarray) -> dict:
-    y_true = np.asarray(y_true).reshape(-1)
-    y_pred = np.asarray(y_pred).reshape(-1)
+import numpy as np
 
-    err = y_pred - y_true
+
+def compute_regression_metrics(y_true: np.ndarray, y_pred: np.ndarray) -> dict:
+    y_true = np.asarray(y_true, dtype=np.float32).reshape(-1)
+    y_pred = np.asarray(y_pred, dtype=np.float32).reshape(-1)
+
+    N = int(y_true.shape[0])  # <- 여기 추가
+
+    err = y_true - y_pred
     mae = float(np.mean(np.abs(err)))
-    mse = float(np.mean(err * err))
+    mse = float(np.mean(err**2))
     rmse = float(np.sqrt(mse))
 
     y_mean = float(np.mean(y_true))
     ss_tot = float(np.sum((y_true - y_mean) ** 2))
     ss_res = float(np.sum((y_true - y_pred) ** 2))
+    r2 = 1.0 - (ss_res / ss_tot) if ss_tot != 0.0 else 0.0
 
-    r2 = 0.0
-    if ss_tot != 0.0:
-        r2 = 1.0 - (ss_res / ss_tot)
+    y_min = float(np.min(y_true))
+    y_max = float(np.max(y_true))
+    y_range = y_max - y_min
+    nrmse_range = (rmse / y_range) if y_range != 0.0 else 0.0
+    nmae_range = (mae / y_range) if y_range != 0.0 else 0.0
+
+    y_std = float(np.std(y_true))
+    nrmse_std = (rmse / y_std) if y_std != 0.0 else 0.0
+    nmae_std = (mae / y_std) if y_std != 0.0 else 0.0
 
     return {
         "mae": mae,
         "mse": mse,
         "rmse": rmse,
         "r2": float(r2),
+        "nrmse_range": float(nrmse_range),
+        "nmae_range": float(nmae_range),
+        "nrmse_std": float(nrmse_std),
+        "nmae_std": float(nmae_std),
+        "num_samples": N,  # <- 여기 추가
     }

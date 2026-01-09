@@ -11,3 +11,7 @@ agg_viz_json/
 src/configs/token.yaml
 *.pyc
 
+Meter A
+Meter B
+Meter C
+Meter D

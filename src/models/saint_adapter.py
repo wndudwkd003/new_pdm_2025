@@ -15,7 +15,7 @@ from src.core.utils.losses import info_nce_loss
 from src.configs.configs import Config
 from src.models.base_model_adapter import BaseModelAdapter
 from src.datasets.data_class import Datasets
-from src.utils.metrics import compute_classification_metrics
+from src.utils.metrics import compute_classification_metrics, compute_regression_metrics
 from src.params.data_model import Split
 
 
@@ -254,7 +254,7 @@ class SAINT(nn.Module):
                 )
         self.encoder = nn.Sequential(*blocks)
 
-        # supervised head (CLS -> logits)
+        # supervised head (CLS -> logits or regression output)
         self.cls_head = nn.Sequential(
             nn.Linear(self.d_token, self.d_token),
             nn.ReLU(),
@@ -290,7 +290,7 @@ class SAINT(nn.Module):
 
     def classify_from_ctx(self, ctx: torch.Tensor) -> torch.Tensor:
         cls = ctx[:, 0, :]  # (B, D)
-        logits = self.cls_head(cls)  # (B, C)
+        logits = self.cls_head(cls)  # (B, d_out)
         return logits
 
     def project_view1(self, ctx: torch.Tensor) -> torch.Tensor:
@@ -353,6 +353,8 @@ class SAINTAdapter(BaseModelAdapter):
         self.input_dim: int | None = None
         self.num_class: int | None = None
 
+        self.task: str = "classification"  # "classification" | "regression"
+
         model_cfg = self.config.model
 
         # unified names (configs.py 기준)
@@ -376,6 +378,64 @@ class SAINTAdapter(BaseModelAdapter):
         else:
             self.mixup_alpha = 0.2
 
+    def _infer_task_from_meta(self, data: Datasets) -> str:
+        meta = data.meta
+
+        if isinstance(meta, dict):
+            if "task" in meta:
+                t = str(meta["task"])
+                if t not in ("classification", "regression"):
+                    raise ValueError(f"Unknown meta.task: {t}")
+                return t
+            return "classification"
+
+        if hasattr(meta, "task"):
+            t = str(getattr(meta, "task"))
+            if t not in ("classification", "regression"):
+                raise ValueError(f"Unknown meta.task: {t}")
+            return t
+
+        return "classification"
+
+    def _get_out_dim(self, task: str, num_class: int) -> int:
+        if task == "regression":
+            return 1
+        return int(num_class)
+
+    def _stage2_loss_and_preds(
+        self,
+        logits: torch.Tensor,
+        y: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """
+        반환:
+          loss: scalar
+          preds: (B,) 분류면 class index(long), 회귀면 float 예측값
+        """
+        if self.task == "regression":
+            # logits: (B,1) or (B,)
+            pred = logits.squeeze(-1)
+            y_f = y.to(torch.float32)
+            loss = F.mse_loss(pred, y_f)
+            return loss, pred
+
+        # classification
+        if self.num_class is None:
+            raise ValueError("num_class is None")
+
+        if int(self.num_class) == 1:
+            # binary logits (B,1) -> BCEWithLogits
+            logit = logits.squeeze(-1)
+            y_f = y.to(torch.float32)
+            loss = F.binary_cross_entropy_with_logits(logit, y_f)
+            pred = (logit > 0.0).to(torch.int64)
+            return loss, pred
+
+        # multi-class (or binary with 2 classes): CE
+        loss = F.cross_entropy(logits, y.to(torch.int64))
+        pred = logits.argmax(dim=1)
+        return loss, pred
+
     # -------------------------
     # Fit (Stage1 -> Stage2)
     # -------------------------
@@ -386,7 +446,10 @@ class SAINTAdapter(BaseModelAdapter):
         self.input_dim = int(train_data.meta.input_dim)
         self.num_class = int(train_data.meta.num_class)
 
-        self.model = self._get_model(self.input_dim, self.num_class)
+        self.task = self._infer_task_from_meta(train_data)
+
+        out_dim = self._get_out_dim(self.task, int(self.num_class))
+        self.model = self._get_model(self.input_dim, out_dim)
 
         stage1_epochs = int(self.config.train.epochs)
         stage2_epochs = int(self.config.train.epochs)
@@ -480,8 +543,8 @@ class SAINTAdapter(BaseModelAdapter):
             lr2 = float(opt2.param_groups[0]["lr"])
             print(
                 f"[SAINT Stage2 Epoch {epoch + 1}] "
-                f"Train: total={tr2['total']:.4f}, ce={tr2['ce']:.4f} | "
-                f"Valid: total={vl2['total']:.4f}, ce={vl2['ce']:.4f} | "
+                f"Train: total={tr2['total']:.4f}, sup={tr2['ce']:.4f} | "
+                f"Valid: total={vl2['total']:.4f}, sup={vl2['ce']:.4f} | "
                 f"LR: {lr2:.6f}"
             )
 
@@ -522,8 +585,12 @@ class SAINTAdapter(BaseModelAdapter):
             vl_loader, split=Split.VALID, stage=2
         )
 
-        train_metrics = compute_classification_metrics(tr_labels, tr_preds)
-        valid_metrics = compute_classification_metrics(vl_labels, vl_preds)
+        if self.task == "regression":
+            train_metrics = compute_regression_metrics(tr_labels, tr_preds)
+            valid_metrics = compute_regression_metrics(vl_labels, vl_preds)
+        else:
+            train_metrics = compute_classification_metrics(tr_labels, tr_preds)
+            valid_metrics = compute_classification_metrics(vl_labels, vl_preds)
 
         metric_name = "total_loss"
         tasks = [
@@ -534,13 +601,13 @@ class SAINTAdapter(BaseModelAdapter):
         components = {
             "stage1": {
                 "train": {
-                    "ce": train_ce_1,
+                    "sup": train_ce_1,
                     "info": train_info_1,
                     "recon": train_recon_1,
                     "total": train_total_1,
                 },
                 "valid": {
-                    "ce": valid_ce_1,
+                    "sup": valid_ce_1,
                     "info": valid_info_1,
                     "recon": valid_recon_1,
                     "total": valid_total_1,
@@ -548,13 +615,13 @@ class SAINTAdapter(BaseModelAdapter):
             },
             "stage2": {
                 "train": {
-                    "ce": train_ce_2,
+                    "sup": train_ce_2,
                     "info": train_info_2,
                     "recon": train_recon_2,
                     "total": train_total_2,
                 },
                 "valid": {
-                    "ce": valid_ce_2,
+                    "sup": valid_ce_2,
                     "info": valid_info_2,
                     "recon": valid_recon_2,
                     "total": valid_total_2,
@@ -563,6 +630,7 @@ class SAINTAdapter(BaseModelAdapter):
         }
 
         results = {
+            "task": self.task,
             "split": Split.TRAIN.value,
             f"{Split.TRAIN.value}_metrics": train_metrics,
             f"{Split.VALID.value}_metrics": valid_metrics,
@@ -593,7 +661,7 @@ class SAINTAdapter(BaseModelAdapter):
         desc = self.get_desc(f"SAINT_stage{stage}", split)
 
         total_sum = 0.0
-        ce_sum = 0.0
+        sup_sum = 0.0
         info_sum = 0.0
         recon_sum = 0.0
         num_batches = 0
@@ -638,7 +706,7 @@ class SAINTAdapter(BaseModelAdapter):
                     x_recon = self.model.reconstruct_from_ctx(ctx_aug)
                     loss_recon = F.mse_loss(x_recon, xb)
 
-                    loss_ce = torch.zeros((), device=self.device)
+                    loss_sup = torch.zeros((), device=self.device)
                     loss_total = (
                         self.lambda_view * loss_info + self.lambda_recon * loss_recon
                     )
@@ -651,7 +719,7 @@ class SAINTAdapter(BaseModelAdapter):
                         optimizer.step()
 
             elif stage == 2:
-                # Stage2는 missing(x)로 CE finetune
+                # Stage2는 missing(x)로 supervised finetune
                 with torch.set_grad_enabled(is_train):
                     out = self.model(
                         x_cont=x_missing, need_logits=True, need_recon=False
@@ -660,10 +728,10 @@ class SAINTAdapter(BaseModelAdapter):
                     if logits is None:
                         raise ValueError("logits is None")
 
-                    loss_ce = F.cross_entropy(logits, y)
+                    loss_sup, _ = self._stage2_loss_and_preds(logits, y)
                     loss_info = torch.zeros((), device=self.device)
                     loss_recon = torch.zeros((), device=self.device)
-                    loss_total = self.lambda_cls * loss_ce
+                    loss_total = self.lambda_cls * loss_sup
 
                     if is_train:
                         if optimizer is None:
@@ -676,14 +744,14 @@ class SAINTAdapter(BaseModelAdapter):
 
             num_batches += 1
             total_sum += float(loss_total.item())
-            ce_sum += float(loss_ce.item())
+            sup_sum += float(loss_sup.item())
             info_sum += float(loss_info.item())
             recon_sum += float(loss_recon.item())
 
         denom = max(1, num_batches)
         return {
             "total": total_sum / denom,
-            "ce": ce_sum / denom,
+            "ce": sup_sum / denom,  # 기존 키 호환(로그/저장 구조 깨지지 않게)
             "info": info_sum / denom,
             "recon": recon_sum / denom,
         }
@@ -701,7 +769,10 @@ class SAINTAdapter(BaseModelAdapter):
             te_loader, split=Split.TEST, stage=2
         )
 
-        metrics_overall = compute_classification_metrics(labels_all, preds_all)
+        if self.task == "regression":
+            metrics_overall = compute_regression_metrics(labels_all, preds_all)
+        else:
+            metrics_overall = compute_classification_metrics(labels_all, preds_all)
 
         patterns = test_data.config.data.missing_patterns
         ratios = test_data.ratios
@@ -716,10 +787,14 @@ class SAINTAdapter(BaseModelAdapter):
                 if np.any(mask):
                     y_sub = labels_all[mask]
                     y_hat_sub = preds_all[mask]
-                    m = compute_classification_metrics(y_sub, y_hat_sub)
+                    if self.task == "regression":
+                        m = compute_regression_metrics(y_sub, y_hat_sub)
+                    else:
+                        m = compute_classification_metrics(y_sub, y_hat_sub)
                     metrics_by_ratio[p_val][ratio] = m
 
         return {
+            "task": self.task,
             "split": Split.TEST.value,
             "metrics_overall": metrics_overall,
             "metrics_by_ratio": metrics_by_ratio,
@@ -736,33 +811,25 @@ class SAINTAdapter(BaseModelAdapter):
         total_loss = 0.0
         num_batches = 0
 
-        all_preds = []
-        all_labels = []
-        all_pattern_idx = []
-        all_ratio_idx = []
+        all_preds: list[torch.Tensor] = []
+        all_labels: list[torch.Tensor] = []
+        all_pattern_idx: list[torch.Tensor] = []
+        all_ratio_idx: list[torch.Tensor] = []
 
         desc = self.get_desc("SAINT", split)
 
         for batch in tqdm(loader, desc=desc):
             x_missing, y, _, _, pattern_idx, ratio_idx = self._prepare_batch(batch)
 
-            if stage == 1:
-                # stage1은 분류 성능 평가 대상이 아니므로 logits 경로를 명시적으로 열어두되,
-                # 실제로는 stage2 평가를 권장합니다.
-                out = self.model(x_cont=x_missing, need_logits=True, need_recon=False)
-                logits = out["logits"]
-                if logits is None:
-                    raise ValueError("logits is None")
-            elif stage == 2:
-                out = self.model(x_cont=x_missing, need_logits=True, need_recon=False)
-                logits = out["logits"]
-                if logits is None:
-                    raise ValueError("logits is None")
-            else:
+            if stage not in (1, 2):
                 raise ValueError(f"unknown stage: {stage}")
 
-            loss = F.cross_entropy(logits, y)
-            preds = logits.argmax(dim=1)
+            out = self.model(x_cont=x_missing, need_logits=True, need_recon=False)
+            logits = out["logits"]
+            if logits is None:
+                raise ValueError("logits is None")
+
+            loss, preds = self._stage2_loss_and_preds(logits, y)
 
             total_loss += float(loss.item())
             num_batches += 1
@@ -779,6 +846,11 @@ class SAINTAdapter(BaseModelAdapter):
         pattern_idx_all = torch.cat(all_pattern_idx, dim=0).numpy()
         ratio_idx_all = torch.cat(all_ratio_idx, dim=0).numpy()
 
+        # regression이면 labels가 int로 들어왔을 수도 있으니, metric 함수에서 안전하게 처리되도록 float로 맞춰둠
+        if self.task == "regression":
+            preds_all = preds_all.astype(np.float32)
+            labels_all = labels_all.astype(np.float32)
+
         return avg_loss, preds_all, labels_all, pattern_idx_all, ratio_idx_all
 
     # -------------------------
@@ -793,10 +865,7 @@ class SAINTAdapter(BaseModelAdapter):
         ratio_idx = batch["ratio_idx"].to(self.device)
         return x, y, x_ori, bemv, pattern_idx, ratio_idx
 
-    def _get_model(self, input_dim: int, num_class: int | None) -> SAINT:
-        if num_class is None:
-            raise ValueError("num_class is None")
-
+    def _get_model(self, input_dim: int, out_dim: int) -> SAINT:
         model_cfg = self.config.model
 
         if hasattr(model_cfg, "saint_d_token"):
@@ -849,7 +918,7 @@ class SAINTAdapter(BaseModelAdapter):
             d_token=d_token,
             num_heads=n_heads,
             num_layers=n_layers,
-            d_out=int(num_class),
+            d_out=int(out_dim),
             use_self_attention=use_self,
             use_intersample_attention=use_intersample,
             attn_dropout=attn_dropout,
@@ -873,7 +942,6 @@ class SAINTAdapter(BaseModelAdapter):
         else:
             raise ValueError(f"unknown stage: {stage}")
 
-        # SAINT: AdamW + weight_decay (default 0.01)
         weight_decay = 0.01
         if hasattr(self.config.train, "weight_decay"):
             weight_decay = float(self.config.train.weight_decay)
@@ -905,6 +973,7 @@ class SAINTAdapter(BaseModelAdapter):
         torch.save(self.model.state_dict(), model_path)
 
         meta = {
+            "task": str(self.task),
             "input_dim": int(self.input_dim) if self.input_dim is not None else None,
             "num_class": int(self.num_class) if self.num_class is not None else None,
             "model_path": str(model_path),
@@ -916,14 +985,21 @@ class SAINTAdapter(BaseModelAdapter):
         save_dir = path / Split.TRAIN.value / "save"
         meta = self.load_meta(save_dir)
 
+        if "task" in meta and meta["task"] is not None:
+            self.task = str(meta["task"])
+        else:
+            self.task = "classification"
+
         if meta["input_dim"] is None or meta["num_class"] is None:
             raise ValueError("meta에 input_dim/num_class가 없습니다.")
 
         self.input_dim = int(meta["input_dim"])
         self.num_class = int(meta["num_class"])
 
+        out_dim = self._get_out_dim(self.task, int(self.num_class))
+
         model_path = Path(meta["model_path"])
-        self.model = self._get_model(self.input_dim, self.num_class)
+        self.model = self._get_model(self.input_dim, out_dim)
 
         state = torch.load(model_path, map_location=self.device)
         self.model.load_state_dict(state)

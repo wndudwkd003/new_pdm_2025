@@ -8,6 +8,7 @@
 """
 
 from dataclasses import dataclass, field
+from typing import Literal, List
 
 from lark import Tree
 from regex import F
@@ -47,7 +48,7 @@ class Data:
 
 @dataclass
 class Train:
-    tree_est: int = 100
+    tree_est: int = 1000
     epochs: int = 1000  # 200
     batch_size: int = 512  # 8
     lr: float = 1e-3
@@ -65,24 +66,29 @@ class Train:
 
 @dataclass
 class Model:
-    model: ModelType = ModelType.REGVAE_XAI
+    model: ModelType = ModelType.HYBRID_XGVAE
     stage: StageType = StageType.NONE
     other_prefix: str = ""
     save_work_dir: str = ""
     model_size: ModelSize = ModelSize.NONE
     cross_ent_metric: str = "cross_entropy"
 
+    hybrid_mode: str = "xgb"  # xgb | lightgbm
+    use_regvae_saint_aug: bool = False
+
     use_my_loss: bool = True
-    use_stage_1_ce: bool = True
+    use_stage_1_ce: bool = False
 
     # xgboost
     eval_metric: str = "auto"
     objective: str = "auto"
 
     # light gbm
-    lgbm_objective: str = "multiclass"
-    lgbm_metric: str = "multi_logloss"
+    # light gbm
+    lgbm_objective: str = "auto"
+    lgbm_metric: str = "auto"
     lgbm_class_weight: str = "balanced"
+
     lambda_kd: float = 1.0
 
     lambda_stage1_ce: float = 1.0
@@ -107,9 +113,9 @@ class Model:
     # -------------------------
     # stage2 retrieval params
     # -------------------------
-    retrieval_k: int = 16
+    retrieval_k: int = 4
     retrieval_tau: float = 0.5
-    retrieval_chunk: int = 65536
+    retrieval_chunk: int = 200000
 
     # -------------------------
     # embedding visualization params
@@ -122,7 +128,7 @@ class Model:
     # -------------------------
     # NAIM params
     # -------------------------
-    naim_d_token: int = 32
+    naim_d_token: int = 198
     naim_embedder_initialization: str = "uniform"  # uniform, normal
     naim_bias: bool = True
 
@@ -155,6 +161,9 @@ class Config:
 
 @dataclass
 class DatasetMeta:
+    task: Literal["classification", "regression"] = "classification"
+    y_col: str = "label"
+
     continuous_cols: list[str] = field(default_factory=list)
     categorical_cols: list[str] = field(default_factory=list)
     input_dim: int = 0

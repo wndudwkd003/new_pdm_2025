@@ -5,15 +5,15 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from sklearn.model_selection import train_test_split
 
 
 # ────────────────────────────────────────────────────
-# Path
+# Root / Path
 # ────────────────────────────────────────────────────
-DATA_PATH = Path("datasets/pdm_ai4i/data/ai4i2020.csv")
+ROOT = Path(__file__).resolve().parent
+DATA_PATH = ROOT / "data" / "ai4i2020.csv"
 
-OUT_ROOT = Path("datasets/pdm_ai4i/processed_data")
+OUT_ROOT = ROOT / "processed_data"
 TRAIN_OUT = OUT_ROOT / "train"
 VALID_OUT = OUT_ROOT / "valid"
 TEST_OUT = OUT_ROOT / "test"
@@ -23,6 +23,7 @@ TRAIN_OUT.mkdir(parents=True, exist_ok=True)
 VALID_OUT.mkdir(parents=True, exist_ok=True)
 TEST_OUT.mkdir(parents=True, exist_ok=True)
 
+
 # ────────────────────────────────────────────────────
 # 설정
 # ────────────────────────────────────────────────────
@@ -31,10 +32,10 @@ TRAIN_RATIO = 0.8
 VALID_RATIO = 0.1
 TEST_RATIO = 0.1
 
-NUM_CLASS = 2
 LABEL_COL = "Machine failure"
+NUM_CLASS = 2
 
-# 연속형만 사용 (요청사항)
+# 연속형만 사용
 CONTINUOUS_COLS = [
     "Air temperature [K]",
     "Process temperature [K]",
@@ -43,10 +44,10 @@ CONTINUOUS_COLS = [
     "Tool wear [min]",
 ]
 
-# 식별자/범주형은 X에서 제외 (요청사항 + 일반적으로도 제외 권장)
+# 식별자/범주형(참고용)
 DROP_ID_OR_CAT = ["UDI", "Product ID", "Type"]
 
-# 누수 컬럼: Machine failure를 구성하는 모드 플래그들 (X에서 반드시 제외)
+# 누수 컬럼: Machine failure를 구성하는 모드 플래그들 (X에서 제외)
 LEAK_COLS = ["TWF", "HDF", "PWF", "OSF", "RNF"]
 
 
@@ -56,9 +57,7 @@ def save_xy(save_dir: Path, feature_cols: list[str], X: np.ndarray, y: np.ndarra
     if y.ndim != 1:
         raise ValueError(f"y must be 1D array, got shape={y.shape}")
     if X.shape[0] != y.shape[0]:
-        raise ValueError(
-            f"Row mismatch: X has {X.shape[0]} rows but y has {y.shape[0]} rows"
-        )
+        raise ValueError(f"Row mismatch: X={X.shape[0]} rows, y={y.shape[0]} rows")
     if X.shape[1] != len(feature_cols):
         raise ValueError(
             f"Feature dim mismatch: X has {X.shape[1]} cols but feature_cols has {len(feature_cols)}"
@@ -82,6 +81,9 @@ def main():
     if not DATA_PATH.exists():
         raise FileNotFoundError(f"File not found: {DATA_PATH}")
 
+    if abs((TRAIN_RATIO + VALID_RATIO + TEST_RATIO) - 1.0) > 1e-9:
+        raise ValueError("TRAIN/VALID/TEST ratios must sum to 1.0")
+
     df = pd.read_csv(DATA_PATH)
 
     # 컬럼 검증
@@ -90,69 +92,69 @@ def main():
     if len(missing) != 0:
         raise ValueError(f"Missing columns in CSV: {missing}")
 
-    # label
+    # label: 0/1
     y = df[LABEL_COL].astype(int).to_numpy()
     uniq_y = np.unique(y)
-    if not set(uniq_y.tolist()).issubset(set([0, 1])):
+    if not set(uniq_y.tolist()).issubset({0, 1}):
         raise ValueError(f"Unexpected label values: {sorted(uniq_y.tolist())}")
 
-    # X: 연속형만
+    # X: 연속형 5개만
     X = df[CONTINUOUS_COLS].astype(float).to_numpy()
     feature_cols = CONTINUOUS_COLS
 
-    # 8:1:1 split (stratified)
-    idx_all = np.arange(len(df))
+    # ─────────────────────────────────────────────
+    # shuffle -> split (seed=42)
+    # ─────────────────────────────────────────────
+    n = len(df)
+    idx = np.arange(n)
+    rng = np.random.default_rng(RANDOM_SEED)
+    rng.shuffle(idx)
 
-    idx_train, idx_temp, y_train, y_temp = train_test_split(
-        idx_all,
-        y,
-        test_size=(1.0 - TRAIN_RATIO),
-        random_state=RANDOM_SEED,
-        shuffle=True,
-        stratify=y,
-    )
+    n_train = int(n * TRAIN_RATIO)
+    n_valid = int(n * VALID_RATIO)
+    n_test = n - n_train - n_valid
 
-    valid_share_in_temp = VALID_RATIO / (VALID_RATIO + TEST_RATIO)
+    if n_train <= 0 or n_valid <= 0 or n_test <= 0:
+        raise ValueError(
+            f"Invalid split sizes: train={n_train}, valid={n_valid}, test={n_test}"
+        )
 
-    idx_valid, idx_test, y_valid, y_test = train_test_split(
-        idx_temp,
-        y_temp,
-        test_size=(1.0 - valid_share_in_temp),
-        random_state=RANDOM_SEED,
-        shuffle=True,
-        stratify=y_temp,
-    )
+    idx_train = idx[:n_train]
+    idx_valid = idx[n_train : n_train + n_valid]
+    idx_test = idx[n_train + n_valid :]
 
-    X_train = X[idx_train]
-    X_valid = X[idx_valid]
-    X_test = X[idx_test]
+    X_train, y_train = X[idx_train], y[idx_train]
+    X_valid, y_valid = X[idx_valid], y[idx_valid]
+    X_test, y_test = X[idx_test], y[idx_test]
 
     save_xy(TRAIN_OUT, feature_cols, X_train, y_train)
     save_xy(VALID_OUT, feature_cols, X_valid, y_valid)
     save_xy(TEST_OUT, feature_cols, X_test, y_test)
 
     meta = {
+        "dataset": "AI4I 2020 Predictive Maintenance",
+        "task": "binary_classification",
+        "label": LABEL_COL,
+        "num_class": int(NUM_CLASS),
         "continuous_cols": feature_cols,
         "categorical_cols": [],
         "input_dim": int(X.shape[1]),
-        "num_class": int(NUM_CLASS),
+        "num_samples_total": int(n),
         "num_samples": {
             "train": int(X_train.shape[0]),
             "valid": int(X_valid.shape[0]),
             "test": int(X_test.shape[0]),
         },
-        "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "dataset": "AI4I 2020 Predictive Maintenance (Kaggle)",
-        "label": LABEL_COL,
+        "split": {
+            "ratios": {"train": TRAIN_RATIO, "valid": VALID_RATIO, "test": TEST_RATIO},
+            "seed": RANDOM_SEED,
+            "method": "shuffle_then_slice",
+        },
         "dropped_cols": {
             "identifiers_or_categorical": DROP_ID_OR_CAT,
             "leakage_cols": LEAK_COLS,
         },
-        "split": {
-            "ratios": {"train": TRAIN_RATIO, "valid": VALID_RATIO, "test": TEST_RATIO},
-            "seed": RANDOM_SEED,
-            "stratify_on": LABEL_COL,
-        },
+        "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "source": {"csv": str(DATA_PATH)},
     }
 

@@ -652,9 +652,9 @@ class ReGVAE(nn.Module):
         else:
             d_out_int = int(d_out)
             self.cls_head = nn.Sequential(
-                nn.Linear(self.latent_dim, self.latent_dim),
-                nn.ReLU(),
                 nn.Linear(self.latent_dim, d_out_int),
+                # nn.Linear(self.latent_dim, self.latent_dim),
+                # nn.ReLU(),
             )
 
         self.feat_gate = FeatGate(self.latent_dim)
