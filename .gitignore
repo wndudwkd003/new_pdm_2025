@@ -15,3 +15,13 @@ Meter A
 Meter B
 Meter C
 Meter D
+
+raw.csv
+*.csv
+
+*.NNA
+
+*_var
+*.txt
+*.DS_Store
+
