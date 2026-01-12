@@ -1,9 +1,9 @@
 #!/bin/bash
 
-GPU="0 1"
+GPU="1 2 3"
 MODE="test"  # train or test
 
-JSON_PATH="outputs_auto_run/2026-01-09_06-56-01_hybrid_seed42_0.0_to_0.5_0.1_step_multi_mcar_zero_auto.json"
+JSON_PATH="outputs_auto_run/2026-01-12_12-33-37_xgboost_0.0_to_0.8_0.1_step_multi_mcar_gain_auto.json"
 
 # test 모드일 때 JSON path 세 번째 인자로 넘김
 if [ "$MODE" = "test" ]; then
@@ -14,8 +14,10 @@ if [ "$MODE" = "test" ]; then
     exit 0
 fi
 
-# train 모드일 때 seeds 정의 75342
-SEEDS=(42 567 2025 6652 87654)
+# (9851454 56547867 69897412 96799887 4311324 6035877)
+# (42 567 2025 6652 87654)
+
+SEEDS=(9851454 56547867 69897412 96799887 4311324 6035877)
 
 python -m scripts.auto_run \
     --mode train \

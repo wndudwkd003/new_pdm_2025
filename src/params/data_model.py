@@ -10,6 +10,24 @@ class DatasetType(Enum):
     PDM_AIRI_BINARY = "datasets/pdm_ai4i_bin/processed_data"
     PDM_AIRI_MULTICLASS = "datasets/pdm_ai4i_multi/processed_data"
 
+    SPF = "datasets/SteelPlatesFaults/processed_data"
+    PMDD = "datasets/PMDD/processed_data"
+    MetroPT3_24 = "datasets/MetroPT3_24/processed_data"
+    MetroPT3_48 = "datasets/MetroPT3_48/processed_data"
+    MetroPT3_72 = "datasets/MetroPT3_72/processed_data"
+
+    IFDD = "datasets/IFDD/processed_data"
+
+    FlowmetersA = "datasets/FlowmetersA/processed_data"
+    FlowmetersB = "datasets/FlowmetersB/processed_data"
+    FlowmetersC = "datasets/FlowmetersC/processed_data"
+    FlowmetersD = "datasets/FlowmetersD/processed_data"
+
+    EGSSD = "datasets/EGSSD/processed_data"
+
+    CBM = "datasets/CBM/processed_data"
+    CBMV3 = "datasets/CBMV3/processed_data"
+
 
 class ModelType(Enum):
     XGBOOST = "xgboost"

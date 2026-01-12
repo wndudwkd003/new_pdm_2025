@@ -26,7 +26,10 @@ from src.params.scenario import MissingScenario, StackMode, MissingPattern, Impu
 
 from src.datasets.zscore_meta import ZScoreMeta
 from src.datasets.balanced_batch_sampler import BalancedClassBatchSampler
-
+from src.imputer.gain_imputer import GAINImputer
+from src.imputer.mice_imputer import MICEImputer
+from src.imputer.knn_imputer import KNNImputer
+from src.imputer.median_imputer import MedianImputer
 
 MISSING_MAP = {
     MissingPattern.MCAR: MCARAdapter,
@@ -35,6 +38,10 @@ MISSING_MAP = {
 IMPUTER_MAP = {
     ImputeMethod.MEAN: MeanImputer,
     ImputeMethod.ZERO: ZeroImputer,
+    ImputeMethod.GAIN: GAINImputer,
+    ImputeMethod.MICE: MICEImputer,
+    ImputeMethod.KNN: KNNImputer,
+    ImputeMethod.MEDIAN: MedianImputer,
 }
 
 

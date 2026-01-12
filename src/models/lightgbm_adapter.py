@@ -109,8 +109,7 @@ class LightGBMAdapter(BaseModelAdapter):
         return int(uniq.size)
 
     def _resolve_device_type(self) -> str:
-        # LightGBM의 device_type은 보통 'cpu' 또는 'gpu' 입니다.
-        d = str(self.config.train.device).lower()
+        return str(self.config.train.device).lower()
 
     # -------------------------
     # train / eval

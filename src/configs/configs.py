@@ -29,7 +29,7 @@ from src.params.scenario import (
 
 @dataclass
 class Data:
-    datasets: DatasetType = DatasetType.MPTMS
+    datasets: DatasetType = DatasetType.EGSSD
     skip_header: bool = True
     data_load_workers: int = 10
     num_workers: int = 5
@@ -37,10 +37,12 @@ class Data:
         default_factory=lambda: [MissingPattern.MCAR]
     )
     missing_scenario: MissingScenario = MissingScenario.MULTI  # SINGLE, MULTI
-    target_missing_ratio: float = 0.5  # 0.5 0.9
+    target_missing_ratio: float = 0.8  # 0.5 0.8 0.9
     start_missing_ratio: float = 0.0
     step_missing_ratio: float = 0.1  # 0.1
-    impute_method: ImputeMethod = ImputeMethod.ZERO
+    impute_method: ImputeMethod = (
+        ImputeMethod.GAIN
+    )  # ZERO, MEAN, MEDIAN, MICE, KNN, GAIN
     use_on_batch: bool = True
     different_mode: bool = False
     # stack_mode: StackMode
@@ -66,7 +68,7 @@ class Train:
 
 @dataclass
 class Model:
-    model: ModelType = ModelType.HYBRID_XGVAE
+    model: ModelType = ModelType.XGBOOST
     stage: StageType = StageType.NONE
     other_prefix: str = ""
     save_work_dir: str = ""

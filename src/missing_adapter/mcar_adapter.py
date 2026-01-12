@@ -2,6 +2,7 @@
 
 import numpy as np
 
+
 class MCARAdapter:
     def __init__(
         self,
