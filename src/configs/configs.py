@@ -29,20 +29,20 @@ from src.params.scenario import (
 
 @dataclass
 class Data:
-    datasets: DatasetType = DatasetType.EGSSD
+    datasets: DatasetType = DatasetType.SPF
     skip_header: bool = True
     data_load_workers: int = 10
     num_workers: int = 5
     missing_patterns: list[MissingPattern] = field(
         default_factory=lambda: [MissingPattern.MCAR]
     )
-    missing_scenario: MissingScenario = MissingScenario.MULTI  # SINGLE, MULTI
-    target_missing_ratio: float = 0.8  # 0.5 0.8 0.9
-    start_missing_ratio: float = 0.0
-    step_missing_ratio: float = 0.1  # 0.1
-    impute_method: ImputeMethod = (
-        ImputeMethod.GAIN
-    )  # ZERO, MEAN, MEDIAN, MICE, KNN, GAIN
+
+    missing_ratio: list[float] = field(
+        default_factory=lambda: [0.1, 0.2, 0.4, 0.6, 0.8]
+    )
+
+    # ZERO, MEAN, MEDIAN, MICE, KNN, GAIN
+    impute_method: ImputeMethod = ImputeMethod.MEDIAN
     use_on_batch: bool = True
     different_mode: bool = False
     # stack_mode: StackMode
@@ -50,15 +50,15 @@ class Data:
 
 @dataclass
 class Train:
-    tree_est: int = 1000
+    tree_est: int = 8000  # default 100(1e-1) 1000(1e-2) 8000(1e-3)
     epochs: int = 1000  # 200
     batch_size: int = 512  # 8
-    lr: float = 1e-3
+    lr: float = 1e-3  # default 1e-1 1e-2 1e-3
     lr_stage_1: float = 1e-3
     lr_stage_2: float = 1e-3
     device: str = "cuda"
     output_dir: str = "outputs"
-    seed: int = -1  # 42 2025 6652
+    seed: int = -1
     early_stopping_rounds: int = 50
     lr_min: float = 1e-5
     lr_min_stage_1: float = 1e-5
@@ -68,7 +68,7 @@ class Train:
 
 @dataclass
 class Model:
-    model: ModelType = ModelType.XGBOOST
+    model: ModelType = ModelType.LIGHTGBM
     stage: StageType = StageType.NONE
     other_prefix: str = ""
     save_work_dir: str = ""

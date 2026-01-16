@@ -10,7 +10,7 @@ outputs_seeds_total/
 agg_viz_json/
 src/configs/token.yaml
 *.pyc
-
+outputs_backup
 Meter A
 Meter B
 Meter C
@@ -18,10 +18,11 @@ Meter D
 
 raw.csv
 *.csv
-
+results
 *.NNA
 
 *_var
 *.txt
 *.DS_Store
 
+seeds.md

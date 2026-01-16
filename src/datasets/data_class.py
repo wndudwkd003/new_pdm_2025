@@ -150,12 +150,9 @@ def _to_class_labels(series: pd.Series) -> np.ndarray:
     return codes.astype(np.int64)
 
 
-# =========================================================
-# multiprocessing missing helper
-# =========================================================
-def _apply_missing_single_ratio(args):
-    ratio, X, seed, pattern = args  # pattern: MissingPattern Enum
-
+# 정의된 결측 패턴 메커니즘(어댑터)을 사용하여 비율에 따른 결측 데이터를 생성
+def apply_missing_scenario_by_ratio(args):
+    ratio, X, seed, pattern = args
     Adapter = MISSING_MAP[pattern]
     adapter = Adapter(ratio=ratio, seed=seed)
     X_missing = adapter.transform(X)
@@ -183,6 +180,8 @@ class Datasets(Dataset):
         self.imputer_dict_external = imputer_dict
         self.imputer_dict = None
 
+        self.ratios = config.data.missing_ratio
+
         # CSV 데이터 로드
         X_raw, y_raw, meta = self.load_data()
         self.meta = meta
@@ -201,61 +200,56 @@ class Datasets(Dataset):
         # Z-score 적용
         self.imputed_dict = self.apply_zscore(self.zscore_meta)
 
-    # ----------------- 필수 메서드 -----------------
     def __len__(self):
         return self.per_data_size
 
     def __getitem__(self, idx: int):
         return {"base_idx": idx}
 
-    # ----------------- 내부 메서드 -----------------
     def apply_missing_scenario(self, X: np.ndarray, y: np.ndarray):
-        ratios = [self.config.data.target_missing_ratio]
+        ratios = self.ratios
 
-        if self.config.data.missing_scenario == MissingScenario.MULTI:
-            start, target, step = (
-                self.config.data.start_missing_ratio,
-                self.config.data.target_missing_ratio,
-                self.config.data.step_missing_ratio,
-            )
-            ratios = np.arange(start, target + step * 0.5, step).round(4).tolist()
+        missing_dict = {"original": {"X": X, "y": y}}  # 원본 데이터 보관
 
-        self.ratios = ratios
-
-        missing_dict = {"original": {"X": X, "y": y}}
+        # pd.DataFrame(X).assign(y=y).to_csv(
+        #     f"/ws/new_pdm_2025/missing_original.csv",
+        #     index=False,
+        # )
 
         total_size = 0
-        use_mp_for_missing = self.config.data.data_load_workers > 1
+        data_load_workers = self.config.data.data_load_workers
+        use_mp_for_missing = data_load_workers >= 1
+        seed = self.config.train.seed
 
+        # 데이터 로드 병렬 워커 처리
+        if not use_mp_for_missing:
+            raise ValueError(
+                "Data load workers must be at least 1 for multiprocessing."
+            )
+
+        # 각 결측 패턴별로 결측 데이터 생성
         for pattern in self.config.data.missing_patterns:
             pattern_v = pattern.value
             missing_dict[pattern_v] = {}
 
-            if use_mp_for_missing:
-                num_workers = self.config.data.data_load_workers
-                args_iter = [
-                    (ratio, X, self.config.train.seed, pattern) for ratio in ratios
-                ]
+            args_iter = [(ratio, X, seed, pattern) for ratio in ratios]
 
-                with ProcessPoolExecutor(max_workers=num_workers) as executor:
-                    for ratio, X_missing in tqdm(
-                        executor.map(_apply_missing_single_ratio, args_iter),
-                        total=len(args_iter),
-                        desc=f"Applying missing ({pattern.name})",
-                        leave=False,
-                    ):
-                        missing_dict[pattern_v][ratio] = {"X": X_missing, "y": y}
-                        total_size += X_missing.shape[0]
-            else:
-                for ratio in tqdm(
-                    ratios, desc=f"Applying missing ({pattern.name})", leave=False
+            # 병렬 처리로 결측 시나리오 적용
+            with ProcessPoolExecutor(max_workers=data_load_workers) as executor:
+                for ratio, X_missing in tqdm(
+                    executor.map(apply_missing_scenario_by_ratio, args_iter),
+                    total=len(args_iter),
+                    desc=f"Applying missing ({pattern.name})",
+                    leave=False,
                 ):
-                    adapter = MISSING_MAP[pattern](
-                        ratio=ratio, seed=self.config.train.seed
-                    )
-                    X_missing = adapter.transform(X)
+                    # 처리된 결측 데이터 저장
                     missing_dict[pattern_v][ratio] = {"X": X_missing, "y": y}
                     total_size += X_missing.shape[0]
+
+                    # pd.DataFrame(X_missing).assign(y=y).to_csv(
+                    #     f"/ws/new_pdm_2025/missing_{pattern_v}_ratio{ratio}.csv",
+                    #     index=False,
+                    # )
 
         self.total_size = total_size
         return missing_dict

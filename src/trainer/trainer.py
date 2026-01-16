@@ -36,10 +36,6 @@ class Trainer:
         now = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
         mn = self.model_type.value.lower()  # model name
 
-        sr = self.config.data.start_missing_ratio  # start ratio
-        tr = self.config.data.target_missing_ratio  # target ratio
-        step = self.config.data.step_missing_ratio  # step ratio
-
         stage = self.stage_type.value.lower()
 
         model_size = self.config.model.model_size.value.lower()
@@ -47,14 +43,13 @@ class Trainer:
         other_prefix = self.config.model.other_prefix
         other_prefix = f"-{other_prefix}" if other_prefix != "" else ""
 
-        missing_scenario = self.config.data.missing_scenario.value
         missing_patterns = "_".join(
             [p.value for p in self.config.data.missing_patterns]
         )
         impute_method = self.config.data.impute_method.value
 
         seed_txt = f"seed{self.config.train.seed}"
-        run_name = f"{now}_{mn}_{seed_txt}_{sr}_to_{tr}_{step}_step_{stage}{model_size}{missing_scenario}_{missing_patterns}_{impute_method}{other_prefix}"
+        run_name = f"{now}_{mn}_{seed_txt}_{stage}{model_size}_{missing_patterns}_{impute_method}{other_prefix}"
 
         # ws dir 생성
         work_dir = Path(self.config.train.output_dir) / run_name
